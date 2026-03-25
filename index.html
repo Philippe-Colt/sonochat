@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="description" content="SonoChat - Communication texte par modulation sonore FT8">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <title>SonoChat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="header-left">
+                <svg class="logo" viewBox="0 0 24 24" width="28" height="28">
+                    <path d="M12 3c-4.97 0-9 3.185-9 7.115 0 2.557 1.522 4.82 3.889 6.115L5.5 21l4.21-2.274C10.45 18.905 11.21 19 12 19c4.97 0 9-3.185 9-7.115S16.97 3 12 3z" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M7 9.5h2v3H7zM11 8h2v5h-2zM15 9.5h2v3h-2z" fill="currentColor" opacity="0.7"/>
+                </svg>
+                <h1>SonoChat</h1>
+            </div>
+            <div class="header-right">
+                <button id="btn-settings" class="icon-btn" title="Parametres">
+                    <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7zm7.43-2.53a7.76 7.76 0 0 0 0-1.94l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.3 7.3 0 0 0-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65a7.3 7.3 0 0 0-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.76 7.76 0 0 0 0 1.94l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .61.22l2.49-1c.52.4 1.08.72 1.69.98l.38 2.65c.05.24.26.42.49.42h4c.24 0 .44-.18.49-.42l.38-2.65a7.3 7.3 0 0 0 1.69-.98l2.49 1a.5.5 0 0 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                </button>
+                <span id="serial-indicator" class="serial-indicator hidden" title="Port serie">
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path d="M7 4v4H4v8h3v4h10v-4h3V8h-3V4H7zm2 2h6v2H9V6zm0 10h6v2H9v-2z" fill="currentColor"/></svg>
+                </span>
+                <span id="status-indicator" class="status idle" title="Pret">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Pret</span>
+                </span>
+            </div>
+        </header>
+
+        <div id="chat-container">
+            <div id="messages">
+                <div class="system-msg">
+                    <p>Bienvenue sur <strong>SonoChat</strong></p>
+                    <p class="sub">Communication texte par modulation sonore FT8</p>
+                    <p class="sub">Activez le micro pour recevoir, tapez un message pour envoyer.</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="spectrum-bar">
+            <canvas id="spectrum-canvas"></canvas>
+        </div>
+
+        <div id="input-area">
+            <button id="btn-listen" class="icon-btn listen-btn" title="Ecouter">
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                    <path class="mic-icon" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93h2c0 3.31 2.69 6 6 6s6-2.69 6-6h2c0 4.08-3.06 7.44-7 7.93V19h4v2H8v-2h4v-3.07z" fill="currentColor"/>
+                </svg>
+            </button>
+            <input type="text" id="msg-input" placeholder="Tapez votre message..." maxlength="13" autocomplete="off">
+            <span id="char-count">0/13</span>
+            <span id="tx-duration" class="tx-duration-hint"></span>
+            <button id="btn-send" class="icon-btn send-btn" title="Envoyer" disabled>
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/>
+                </svg>
+            </button>
+            <button id="btn-cancel" class="icon-btn cancel-btn hidden" title="Annuler">
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Settings Panel -->
+        <div id="settings-panel" class="panel hidden">
+            <div class="panel-header">
+                <h2>Parametres</h2>
+                <button id="btn-close-settings" class="icon-btn">&times;</button>
+            </div>
+            <div class="panel-body">
+                <div class="setting-group">
+                    <label>Volume d'emission</label>
+                    <input type="range" id="setting-volume" min="0" max="100" value="80">
+                    <span id="volume-val">80%</span>
+                </div>
+                <div class="setting-group">
+                    <label>Frequence de base (Hz)</label>
+                    <input type="number" id="setting-base-freq" min="500" max="3000" value="1000" step="50">
+                </div>
+                <div class="setting-group">
+                    <label>Mode de transmission</label>
+                    <select id="setting-tx-mode">
+                        <option value="standard">Standard (13 car.)</option>
+                        <option value="multi-frame">Multi-trame (130 car.)</option>
+                        <option value="extended">Trame etendue (130 car.)</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label>Port serie (PTT)</label>
+                    <div class="serial-controls">
+                        <button id="btn-serial-connect" class="serial-btn">Connecter</button>
+                        <span id="serial-status" class="serial-status">Deconnecte</span>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label>Signal PTT</label>
+                    <select id="setting-ptt-signal">
+                        <option value="RTS">RTS</option>
+                        <option value="DTR">DTR</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label>Niveau actif PTT</label>
+                    <select id="setting-ptt-level">
+                        <option value="high">Haut (actif = high)</option>
+                        <option value="low">Bas (actif = low)</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label>Protocole FT8</label>
+                    <p class="setting-info">8-GFSK | 6.25 Hz/ton | 160 ms/symbole | 79 symboles | 12.64 s</p>
+                    <p class="setting-info">LDPC(174,91) + CRC-14 | Bande: 50 Hz</p>
+                </div>
+                <div class="setting-group">
+                    <button id="btn-clear-history" class="danger-btn">Effacer l'historique</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="ft8-modem.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

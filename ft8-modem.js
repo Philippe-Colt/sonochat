@@ -1377,31 +1377,39 @@ class FT8Modem {
     // Require at least 40% of the first block's Costas score to accept a continuation
     const minScore = Math.max(20, (firstScore || 50) * 0.4);
 
-    for (let b = 1; b < FT8.EXTENDED_MAX_BLOCKS; b++) {
-      const blockOff = sampleOff + b * blockStep * nsps;
-
-      // Check if Costas exists at this block boundary
-      if (blockOff + FT8.NUM_SYMBOLS * nsps > audio.length) break;
+    // Decode the 79-symbol window at a block boundary, or null if absent/invalid
+    const decodeBlockAt = (blockOff) => {
+      if (blockOff < 0 || blockOff + FT8.NUM_SYMBOLS * nsps > audio.length) return null;
 
       const score = this._costasScoreGoertzel(audio, sampleRate, nsps, blockOff, freq0);
-      if (score < minScore) break; // No more valid blocks
+      if (score < minScore) return null; // No valid block here
 
-      // Decode this 79-symbol window
       const mag = this._computeMagnitudesGoertzel(audio, sampleRate, nsps, blockOff, freq0);
-      if (!mag) break;
+      if (!mag) return null;
 
       const llr = this._extractLLRNormalized(mag);
-      if (!llr) break;
+      if (!llr) return null;
 
       const info91 = FT8Modem.ldpcDecode(llr, 50);
-      if (!info91) break;
+      if (!info91) return null;
 
-      const payload = info91.slice(0, 77);
-      const text = FT8Modem.decodeText(payload);
+      return FT8Modem.decodeText(info91.slice(0, 77));
+    };
+
+    // The best Costas candidate may be any block of the frame, not only the
+    // first: search backward for preceding blocks, then forward.
+    for (let b = 1; texts.length < FT8.EXTENDED_MAX_BLOCKS; b++) {
+      const text = decodeBlockAt(sampleOff - b * blockStep * nsps);
       if (text === null) break;
+      texts.unshift(text);
+      console.log('[FT8 RX] ext block -' + b + ': "' + text + '"');
+    }
 
+    for (let b = 1; texts.length < FT8.EXTENDED_MAX_BLOCKS; b++) {
+      const text = decodeBlockAt(sampleOff + b * blockStep * nsps);
+      if (text === null) break;
       texts.push(text);
-      console.log('[FT8 RX] ext block ' + (b + 1) + ': "' + text + '" score=' + score.toFixed(0));
+      console.log('[FT8 RX] ext block +' + b + ': "' + text + '"');
     }
 
     if (texts.length > 1) {

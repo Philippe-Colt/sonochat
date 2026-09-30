@@ -1,4 +1,6 @@
-const CACHE_NAME = 'sonochat-v4';
+// Le déploiement (deploy.sh) remplace cette version par une empreinte des
+// fichiers servis : chaque mise en ligne invalide le cache sans bump manuel.
+const CACHE_NAME = 'sonochat-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -6,13 +8,17 @@ const ASSETS = [
   './ft8-modem.js',
   './app.js',
   './icon.svg',
+  './icon-192.png',
+  './icon-512.png',
   './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(ASSETS))
+      // 'reload' contourne le cache HTTP : on précache la version du serveur,
+      // pas une copie périmée gardée par le navigateur ou Cloudflare.
+      .then(cache => cache.addAll(ASSETS.map(url => new Request(url, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -28,8 +34,19 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+
+  // Navigation (y compris avec paramètres d'URL) : l'app shell, même hors ligne.
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      caches.match('./index.html').then(cached => cached || fetch(req))
+    );
+    return;
+  }
+
   event.respondWith(
-    caches.match(event.request)
-      .then(cached => cached || fetch(event.request))
+    caches.match(req, { ignoreSearch: true })
+      .then(cached => cached || fetch(req))
   );
 });

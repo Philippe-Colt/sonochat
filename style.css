@@ -544,3 +544,52 @@ header h1 {
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }
 }
+
+/* Aide permission micro */
+.mic-help {
+  margin: 12px auto;
+  max-width: 480px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mic-help-title {
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.mic-help ol {
+  padding-left: 20px;
+}
+
+.mic-help li {
+  margin-bottom: 6px;
+}
+
+.mic-help-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.mic-help-actions button {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.mic-help-actions .mic-help-retry {
+  background: var(--accent);
+  border-color: var(--accent);
+}

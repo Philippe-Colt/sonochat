@@ -397,10 +397,109 @@
       try {
         await modem.startListening();
         btnListen.classList.add('active');
+        hideMicHelp();
       } catch (err) {
-        alert('Impossible d\'acceder au microphone.\nVerifiez les permissions.');
+        showMicHelp(err);
       }
     }
+  }
+
+  // === Aide permission micro ===
+  // Une fois l'origine bloquee (refus explicite, ou 3 fermetures de la demande
+  // sous Chromium), le navigateur ne reaffiche plus jamais la demande et aucune
+  // API ne permet a la page de la relancer : seul l'utilisateur peut debloquer
+  // dans les reglages. On explique ou, puis on reprend l'ecoute des que la
+  // permission change.
+  let micPermWatch = null;
+
+  function micHelpSteps() {
+    const ua = navigator.userAgent;
+    const android = /Android/i.test(ua);
+    const brave = !!navigator.brave;
+    const installed = matchMedia('(display-mode: standalone)').matches;
+    const host = location.host;
+    const browser = brave ? 'Brave' : 'le navigateur';
+
+    if (android) {
+      const steps = [];
+      if (brave) {
+        steps.push(`Ouvrez Brave &rarr; <b>&#8942;</b> &rarr; <b>Parametres</b> &rarr; <b>Parametres des sites</b> &rarr; <b>Microphone</b>, touchez <b>${host}</b> et choisissez <b>Autoriser</b>.`);
+      } else {
+        steps.push(`Dans ${browser} : <b>&#8942;</b> &rarr; <b>Parametres</b> &rarr; <b>Parametres des sites</b> &rarr; <b>Microphone</b> &rarr; <b>${host}</b> &rarr; <b>Autoriser</b>.`);
+      }
+      steps.push(`Verifiez aussi Android : <b>Parametres</b> &rarr; <b>Applications</b> &rarr; <b>${brave ? 'Brave' : 'votre navigateur'}</b> &rarr; <b>Autorisations</b> &rarr; <b>Micro</b> &rarr; <b>Autoriser seulement si l'appli est en cours d'utilisation</b>.`);
+      steps.push(installed
+        ? 'Revenez dans SonoChat : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
+        : 'Revenez sur cette page : l\'ecoute reprend toute seule, sinon rechargez-la.');
+      return steps;
+    }
+    return [
+      `Cliquez sur l'icone a gauche de l'adresse <b>${host}</b> &rarr; <b>Microphone</b> &rarr; <b>Autoriser</b>.`,
+      'L\'ecoute reprend toute seule, sinon rechargez la page.'
+    ];
+  }
+
+  function showMicHelp(err) {
+    const name = err && err.name;
+    let title, steps;
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      title = 'Le microphone est bloque pour SonoChat';
+      steps = micHelpSteps();
+    } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      title = 'Aucun microphone detecte';
+      steps = ['Branchez ou activez un microphone, puis touchez a nouveau le bouton micro.'];
+    } else if (name === 'NotReadableError' || name === 'AbortError') {
+      title = 'Le microphone est deja utilise';
+      steps = ['Fermez l\'application qui l\'utilise (appel, dictaphone...), puis touchez a nouveau le bouton micro.'];
+    } else {
+      title = 'Impossible d\'acceder au microphone';
+      steps = [escapeHtml(String(err && err.message || err))];
+    }
+
+    hideMicHelp();
+    const el = document.createElement('div');
+    el.className = 'mic-help';
+    el.id = 'mic-help';
+    el.innerHTML = `
+      <p class="mic-help-title">${title}</p>
+      <ol>${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+      <div class="mic-help-actions">
+        <button type="button" class="mic-help-retry">Reessayer</button>
+        <button type="button" class="mic-help-close">Fermer</button>
+      </div>
+    `;
+    el.querySelector('.mic-help-retry').addEventListener('click', toggleListen);
+    el.querySelector('.mic-help-close').addEventListener('click', hideMicHelp);
+    messagesEl.appendChild(el);
+    scrollToBottom();
+
+    if (name === 'NotAllowedError') watchMicPermission();
+  }
+
+  function hideMicHelp() {
+    const el = document.getElementById('mic-help');
+    if (el) el.remove();
+  }
+
+  // Reprend l'ecoute automatiquement quand l'utilisateur debloque le micro
+  // (retour depuis les reglages). Permissions API absente : bouton Reessayer.
+  async function watchMicPermission() {
+    if (micPermWatch || !navigator.permissions) return;
+    try {
+      micPermWatch = await navigator.permissions.query({ name: 'microphone' });
+    } catch (e) {
+      return;
+    }
+    micPermWatch.addEventListener('change', () => {
+      if (micPermWatch.state !== 'denied' && !modem.listening) toggleListen();
+    });
+    // Sur Android, revenir des reglages ne declenche pas toujours 'change'
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && micPermWatch.state === 'granted'
+          && !modem.listening && document.getElementById('mic-help')) {
+        toggleListen();
+      }
+    });
   }
 
   // === Status ===
@@ -582,6 +681,14 @@
   // === Service Worker ===
   function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
+      // Une nouvelle version prend le controle : on recharge pour l'utiliser,
+      // sauf en pleine emission/ecoute (elle s'appliquera au prochain lancement).
+      const hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController) return; // premiere installation, rien a recharger
+        if (modem && (modem.transmitting || modem.listening)) return;
+        location.reload();
+      });
       navigator.serviceWorker.register('./sw.js')
         .then(() => console.log('Service Worker enregistre'))
         .catch(err => console.warn('SW erreur:', err));

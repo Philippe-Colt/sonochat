@@ -40,7 +40,30 @@ python3 -m http.server 8080
 
 # Vérifier la syntaxe JS
 node -c ft8-modem.js && node -c app.js
+
+# Test loopback hors navigateur (encodage → GFSK → bruit AWGN → décodage)
+# Taux de décodage par SNR (réf. 2500 Hz), 48 et 44,1 kHz — ~2 min
+node tests/loopback.js all 5
+node tests/loopback.js quick 3   # standard seul, rapide
 ```
+
+
+## Déploiement — https://sonochat.f4mtx.com
+
+```bash
+./deploy.sh   # vérifie la syntaxe, copie vers /srv/sonochat (sudo)
+```
+
+- Chaîne : Cloudflare Tunnel (`*.f4mtx.com` → localhost:80) → Caddy (`/etc/caddy/Caddyfile`,
+  bloc `http://sonochat.f4mtx.com`, `file_server` sur `/srv/sonochat`). Pas de container.
+- `deploy.sh` remplace `CACHE_NAME` de `sw.js` par une empreinte des fichiers servis :
+  pas de bump manuel. Tout nouveau fichier servi doit être ajouté à `FILES` (deploy.sh)
+  **et** à `ASSETS` (sw.js), sinon il manquera hors ligne.
+- Hors ligne : le SW précache tout à l'installation (`cache: 'reload'`), sert l'app shell
+  pour toute navigation (même avec `?query`). À la mise à jour, la page se recharge d'elle-même
+  sauf en émission/écoute.
+- Cloudflare réécrit `Cache-Control` en `max-age=14400` sur .js/.png (réglage de zone
+  « Browser Cache TTL ») ; sans effet sur les mises à jour, le SW contournant le cache HTTP.
 
 ## Notes
 

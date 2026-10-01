@@ -23,15 +23,16 @@ async function trial(text, mode, snrDb, sr, freqOff, fs2) {
   // SNR in 2500 Hz reference BW (WSJT-X convention)
   const noiseP = p / Math.pow(10, snrDb/10) * (sr/2) / 2500;
   const sigma = Math.sqrt(noiseP);
-  const start = L - wave.length - Math.round(sr * (0.5 + Math.random()*1.5));
+  const start = L - wave.length - Math.round(sr * (1.0 + Math.random()*1.5));
   for (let i=0;i<L;i++) buf[i] = sigma*gauss();
   for (let i=0;i<wave.length;i++) buf[start+i] += wave[i];
-  Object.assign(m, { _sampleRate: sr, _nsps: nsps, _ringBuffer: buf, _ringBufferLen: L, _ringWritePos: 0, _decodedSet: new Set(), listening: true });
+  Object.assign(m, { _sampleRate: sr, _nsps: nsps, _ringBuffer: buf, _ringBufferLen: L, _ringWritePos: 0, listening: true });
+  m._resetRxState(); m._absWritten = L;
   m.analyser = null; m.onSpectrumData = null;
   // replicate window setup from _startDecoding without timers
   const taperLen = Math.round(nsps*0.05); m._toneWindow = new Float32Array(nsps).fill(1);
   for (let i=0;i<taperLen;i++){ const e=0.5*(1-Math.cos(Math.PI*i/taperLen)); m._toneWindow[i]=e; m._toneWindow[nsps-1-i]=e; }
-  let got = null; m.onReceive = t => { got = t; };
+  let got = null; m.onFrame = f => { if (f.text !== null) got = f.text; };
   const t0 = performance.now();
   await m._attemptDecode();
   return { ok: got === text, got, ms: performance.now()-t0 };

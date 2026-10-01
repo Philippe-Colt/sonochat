@@ -36,15 +36,25 @@
   const serialIndicator = document.getElementById('serial-indicator');
   const settingPttSignal = document.getElementById('setting-ptt-signal');
   const settingPttLevel = document.getElementById('setting-ptt-level');
+  const settingAck = document.getElementById('setting-ack');
+  const settingCallsign = document.getElementById('setting-callsign');
+  const myCallEl = document.getElementById('my-call');
+  const btnDirectoryImport = document.getElementById('btn-directory-import');
+  const btnDirectoryClear = document.getElementById('btn-directory-clear');
+  const directoryFile = document.getElementById('directory-file');
+  const directoryStatus = document.getElementById('directory-status');
 
   // === State ===
   let modem = null;
+  let link = null;       // SonoLink : accuses et repetitions (arq.js)
   let history = [];
   let serialPort = null;
-  let _recentReceived = [];
+  const _rxBubbles = new Map(); // id de reception SonoLink -> { el, msg }
+  let directory = {};           // annuaire : indicatif court -> indicatif long
 
   // === Init ===
   function init() {
+    loadDirectory();
     loadHistory();
     renderHistory();
     initModem();
@@ -60,77 +70,17 @@
       volume: settings.volume / 100,
     });
 
-    modem.onReceive = (text) => {
-      const now = Date.now();
-
-      // Skip exact duplicates
-      const isDup = _recentReceived.some(r =>
-        now - r.time < 60000 && r.text === text
-      );
-      if (isDup) return;
-
-      // Skip if already contained in a longer finalized message
-      const dominated = _recentReceived.some(r =>
-        now - r.time < 60000 && r.text.includes(text) && r.finalized
-      );
-      if (dominated) return;
-
-      // Check if this new text supersedes an existing partial bubble
-      let updated = false;
-      for (let i = _recentReceived.length - 1; i >= 0; i--) {
-        const r = _recentReceived[i];
-        if (now - r.time > 60000) continue;
-        if (text.includes(r.text) && text !== r.text && r.el && r.el.parentNode) {
-          // Update the existing bubble in-place
-          r.el.querySelector('.msg-text').textContent = text;
-          r.el.classList.add('receiving');
-          r.text = text;
-          r.time = now;
-          // Reset finalize timer
-          clearTimeout(r.finalizeTimer);
-          r.finalizeTimer = setTimeout(() => finalizeRxMessage(r), 15000);
-          updated = true;
-          scrollToBottom();
-          break;
-        }
-      }
-
-      if (!updated) {
-        // New message bubble (shown as "receiving" = in progress)
-        const msgEl = addMessage(text, 'received');
-        msgEl.classList.add('receiving');
-        const entry = { text, time: now, el: msgEl, finalized: false, finalizeTimer: null };
-        entry.finalizeTimer = setTimeout(() => finalizeRxMessage(entry), 15000);
-        _recentReceived.push(entry);
-      }
-
-      // Clean old entries
-      while (_recentReceived.length > 30) {
-        const old = _recentReceived.shift();
-        clearTimeout(old.finalizeTimer);
-      }
-    };
-
-    function finalizeRxMessage(entry) {
-      entry.finalized = true;
-      if (entry.el && entry.el.parentNode) {
-        entry.el.classList.remove('receiving');
-        // Update time to final
-        const metaEl = entry.el.querySelector('.msg-meta');
-        if (metaEl) {
-          const timeStr = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          metaEl.innerHTML = timeStr + ' <span class="rx-source">FT8</span>';
-        }
-        // Save to history
-        history.push({
-          text: entry.text,
-          type: 'received',
-          time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          timestamp: Date.now()
-        });
-        saveHistory();
-      }
-    }
+    link = new SonoLink({
+      transmit: (frames, opts) => modem.transmitSymbols(frames.map(frameToSymbols), opts),
+      abort: () => modem.cancelTransmit(),
+      ackEnabled: () => settingAck.checked && modem.listening,
+      callsign: () => myCallsign(),
+      log: (m) => console.log('[LINK] ' + m),
+    });
+    modem.onFrame = (frame) => link.handleFrame(frame);
+    modem.onUndecoded = (info) => link.handleUndecoded(info);
+    link.onRx = onLinkRx;
+    link.onTx = onLinkTx;
 
     modem.onSpectrumData = (freqData, sampleRate, fftSize) => {
       drawSpectrum(freqData, sampleRate, fftSize);
@@ -139,6 +89,127 @@
     modem.onStatusChange = (status) => {
       updateStatus(status);
     };
+  }
+
+  function frameToSymbols(f) {
+    if (f.kind === 'tele') return FT8Modem.payloadToSymbols(FT8Modem.encodeTelemetry(f.value));
+    if (f.kind === 'ext') return FT8Modem.textToExtendedSymbols(f.text);
+    return FT8Modem.textToSymbols(f.text);
+  }
+
+  const timeNow = () => new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  // Reception : une bulle par message SonoLink, mise a jour au fil des trames
+  function onLinkRx(ev) {
+    const { call, body } = splitCallsign(ev.text);
+    let b = _rxBubbles.get(ev.id);
+    if (!b) {
+      const el = addMessage(body, 'received', false, 0, call);
+      el.classList.add('receiving');
+      b = { el, msg: null };
+      _rxBubbles.set(ev.id, b);
+      while (_rxBubbles.size > 50) _rxBubbles.delete(_rxBubbles.keys().next().value);
+    }
+    b.el.querySelector('.msg-text').textContent = body;
+    setCallEl(b.el.querySelector('.msg-call'), call);
+    b.el.classList.toggle('receiving', !ev.done);
+    b.el.classList.toggle('incomplete', ev.done && !ev.complete);
+
+    const parts = [];
+    if (ev.total > 1) parts.push(ev.frames + '/' + ev.total + ' trames');
+    if (ev.done && !ev.complete) parts.push('incomplet');
+    if (ev.ackSent) parts.push('accuse envoye');
+    const meta = b.el.querySelector('.msg-meta');
+    meta.innerHTML = timeNow() + ' <span class="rx-source">FT8</span>'
+      + (parts.length ? ' <span class="link-status">' + escapeHtml(parts.join(' · ')) + '</span>' : '');
+    scrollToBottom();
+
+    if (ev.done) {
+      // Enregistre une fois, puis met a jour si une repetition complete le message
+      if (!b.msg) {
+        b.msg = { text: body, call, type: 'received', time: timeNow(), timestamp: Date.now() };
+        history.push(b.msg);
+      } else {
+        b.msg.text = body;
+        b.msg.call = call;
+      }
+      b.msg.status = ev.complete ? '' : 'incomplet';
+      saveHistory();
+    }
+  }
+
+  // === Indicatifs ===
+  // Sur l'air, chaque message commence par l'indicatif court (2 caracteres) de
+  // son emetteur. L'annuaire le traduit en indicatif long a l'affichage
+  // seulement : l'historique garde le court, un annuaire importe plus tard
+  // s'applique donc aussi aux anciens messages.
+  const CALL_RE = /^[A-Z0-9]{2}$/;
+
+  function myCallsign() {
+    return CALL_RE.test(settingCallsign.value) ? settingCallsign.value : '';
+  }
+
+  function splitCallsign(text) {
+    if (text.startsWith(LINK.MISSING)) return { call: '?', body: text }; // trame 1 perdue
+    return { call: text.substring(0, 2).trim() || '?', body: text.substring(2) };
+  }
+
+  function displayCall(call) {
+    return lookupCall(directory, call);
+  }
+
+  /** Indicatif de la station, toujours visible sur la page de chat. */
+  function updateMyCall() {
+    const call = myCallsign();
+    const long = call ? displayCall(call) : '';
+    myCallEl.textContent = call ? long : 'Indicatif ?';
+    myCallEl.classList.toggle('missing', !call);
+    myCallEl.title = !call ? 'Definir mon indicatif (parametres)'
+      : long !== call ? 'Mon indicatif : ' + long + ' (code court ' + call + ')'
+      : 'Mon indicatif (modifiable dans les parametres)';
+  }
+
+  function callSpan(call, tag, cls) {
+    if (!call) return '';
+    const long = displayCall(call);
+    const title = long !== call ? ` title="Indicatif court ${escapeHtml(call)}"` : '';
+    return `<${tag} class="${cls}" data-call="${escapeHtml(call)}"${title}>${escapeHtml(long)}</${tag}>`;
+  }
+
+  function setCallEl(el, call) {
+    if (!el) return;
+    el.dataset.call = call;
+    const long = displayCall(call);
+    el.textContent = long;
+    el.title = long !== call ? 'Indicatif court ' + call : '';
+  }
+
+  /** Applique l'annuaire a tous les indicatifs affiches (bulles, « recu par »). */
+  function refreshCalls() {
+    messagesEl.querySelectorAll('[data-call]').forEach((el) => setCallEl(el, el.dataset.call));
+    updateMyCall();
+  }
+
+  function txStatusHtml(label, by) {
+    return escapeHtml(label) + (by ? ' par ' + callSpan(by, 'span', 'call-ref') : '');
+  }
+
+  // Emission : etat de l'echange sur la bulle envoyee
+  let _txBubble = null;
+
+  function onLinkTx(ev) {
+    if (!_txBubble) return;
+    const statusEl = _txBubble.querySelector('.link-status');
+    const frame = ev.total > 1 ? 'trame ' + (ev.seq + 1) + '/' + ev.total : '';
+    const retry = ev.attempt ? 'repetition ' + ev.attempt + '/' + LINK.MAX_RETRIES : '';
+    let text = '';
+    switch (ev.state) {
+      case 'frame': text = [frame || 'emission', retry].filter(Boolean).join(' · '); break;
+      case 'waitAck': text = [frame, 'attente accuse', retry].filter(Boolean).join(' · '); break;
+      case 'retry': text = [frame, ev.reason === 'rpt' ? 'repetition demandee' : ev.reason === 'mismatch' ? 'message incomplet chez le correspondant' : 'pas d\'accuse'].filter(Boolean).join(' · '); break;
+      default: return;
+    }
+    if (statusEl) statusEl.textContent = text;
   }
 
   function initUI() {
@@ -157,6 +228,34 @@
       saveAndApplySettings();
       updateInputState();
     });
+    settingAck.addEventListener('change', () => {
+      saveAndApplySettings();
+      updateInputState();
+    });
+    settingCallsign.addEventListener('input', () => {
+      const v = settingCallsign.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 2);
+      if (v !== settingCallsign.value) settingCallsign.value = v;
+      const ok = CALL_RE.test(v);
+      settingCallsign.classList.toggle('required', !ok);
+      if (ok) {
+        const info = settingCallsign.parentElement.querySelector('.setting-info');
+        if (info) info.classList.remove('warning');
+      }
+      saveAndApplySettings();
+      updateMyCall();
+    });
+    myCallEl.addEventListener('click', askCallsign);
+
+    // Annuaire
+    btnDirectoryImport.addEventListener('click', () => directoryFile.click());
+    directoryFile.addEventListener('change', importDirectory);
+    btnDirectoryClear.addEventListener('click', () => {
+      if (!Object.keys(directory).length || !confirm('Effacer l\'annuaire ?')) return;
+      directory = {};
+      saveDirectory();
+      refreshCalls();
+      updateDirectoryStatus();
+    });
 
     function updateInputState() {
       const filtered = msgInput.value.toUpperCase().split('').filter(
@@ -166,18 +265,18 @@
         msgInput.value = filtered;
       }
       const mode = settingTxMode.value;
-      const maxLen = mode === 'standard' ? 13 : 130;
+      const maxLen = maxTextLength(mode);
       if (msgInput.value.length > maxLen) {
         msgInput.value = msgInput.value.substring(0, maxLen);
       }
       msgInput.maxLength = maxLen;
       const len = msgInput.value.length;
       charCount.textContent = `${len}/${maxLen}`;
-      btnSend.disabled = len === 0 || modem.transmitting;
+      btnSend.disabled = len === 0 || link.busy;
 
       if (len > 0) {
-        const dur = FT8Modem.estimateDuration(msgInput.value, mode);
-        txDurationEl.textContent = '~' + dur.toFixed(1) + 's';
+        const dur = SonoLink.estimateDuration(msgInput.value, mode, settingAck.checked);
+        txDurationEl.textContent = '~' + formatDuration(dur);
       } else {
         txDurationEl.textContent = '';
       }
@@ -226,6 +325,11 @@
     settingPttSignal.value = settings.pttSignal || 'RTS';
     settingPttLevel.value = settings.pttActiveHigh !== false ? 'high' : 'low';
     settingTxMode.value = settings.txMode || 'standard';
+    settingAck.checked = settings.ack === true;
+    settingCallsign.value = settings.callsign || '';
+    updateMyCall();
+    updateDirectoryStatus();
+    updateInputState(); // limite et compteur du mode enregistre (11 ou 128)
 
     // Canvas resize
     window.addEventListener('resize', resizeCanvas);
@@ -233,15 +337,46 @@
 
   // === Messages ===
   let _txTimer = null;
-  let _txMsgEl = null;
+
+  function formatDuration(sec) {
+    sec = Math.round(sec);
+    return sec < 60 ? sec + 's' : Math.floor(sec / 60) + 'min' + String(sec % 60).padStart(2, '0');
+  }
+
+  const TX_RESULT = {
+    confirmed: { label: '\u2713\u2713 recu', cls: 'confirmed' },
+    sent: { label: 'envoye sans accuse', cls: '' },
+    failed: { label: '\u2717 non confirme', cls: 'failed' },
+    mismatch: { label: '\u2717 incoherence', cls: 'failed' },
+    cancelled: { label: 'annule', cls: 'cancelled' },
+  };
+
+  // 13 ou 130 caracteres sur l'air, dont 2 pour l'indicatif
+  function maxTextLength(mode) {
+    return (mode === 'standard' ? 13 : 130) - 2;
+  }
+
+  function askCallsign() {
+    settingsPanel.classList.remove('hidden');
+    settingCallsign.classList.add('required');
+    settingCallsign.focus();
+    const info = settingCallsign.parentElement.querySelector('.setting-info');
+    if (info) info.classList.add('warning');
+  }
 
   async function sendMessage() {
     const text = msgInput.value.trim();
-    if (!text || modem.transmitting) return;
+    if (!text || link.busy) return;
+
+    const callsign = myCallsign();
+    if (!callsign) {
+      askCallsign();
+      return;
+    }
 
     const mode = settingTxMode.value;
-    const maxLen = mode === 'standard' ? 13 : 130;
-    const totalDur = FT8Modem.estimateDuration(text, mode);
+    const maxLen = maxTextLength(mode);
+    let ack = settingAck.checked;
     msgInput.value = '';
     charCount.textContent = '0/' + maxLen;
     txDurationEl.textContent = '';
@@ -251,60 +386,74 @@
     btnSend.classList.add('hidden');
     btnCancel.classList.remove('hidden');
 
-    const msgEl = addMessage(text, 'sent', true, totalDur);
-    _txMsgEl = msgEl;
+    // L'emetteur doit entendre les accuses : ecoute demarree si besoin
+    let note = '';
+    if (ack && !modem.listening) {
+      await toggleListen();
+      if (!modem.listening) {
+        ack = false;
+        note = ' (micro inactif)';
+      }
+    }
+
+    const onAir = callsign + text;
+    const totalDur = SonoLink.estimateDuration(onAir, mode, ack);
+    const msgEl = addMessage(text, 'sent', true, totalDur, callsign);
+    _txBubble = msgEl;
 
     // Live countdown in the message
     const txStart = Date.now();
     const progressEl = msgEl.querySelector('.tx-progress');
     _txTimer = setInterval(() => {
-      const elapsed = (Date.now() - txStart) / 1000;
-      const remaining = Math.max(0, totalDur - elapsed);
-      if (progressEl) {
-        progressEl.textContent = remaining.toFixed(0) + 's';
-      }
+      const remaining = Math.max(0, totalDur - (Date.now() - txStart) / 1000);
+      if (progressEl) progressEl.textContent = '~' + formatDuration(remaining);
     }, 500);
 
+    let result;
     try {
-      if (mode === 'multi-frame') {
-        await modem.transmitMultiFrame(text);
-      } else if (mode === 'extended') {
-        await modem.transmitExtended(text);
-      } else {
-        await modem.transmit(text);
-      }
-      finishTx(msgEl, modem._txAborted);
+      result = await link.send(onAir, mode, { ack });
     } catch (err) {
       console.error('Erreur transmission:', err);
-      finishTx(msgEl, true);
+      result = { status: 'failed' };
     }
+    finishTx(msgEl, result, note);
   }
 
-  function finishTx(msgEl, cancelled) {
+  function finishTx(msgEl, result, note) {
     clearInterval(_txTimer);
     _txTimer = null;
-    _txMsgEl = null;
+    _txBubble = null;
     btnCancel.classList.add('hidden');
     btnSend.classList.remove('hidden');
-    btnSend.disabled = false;
-    msgEl.classList.remove('sending');
+    btnSend.disabled = msgInput.value.length === 0;
+
+    const r = TX_RESULT[result.status] || TX_RESULT.failed;
+    let label = r.label + (note || '');
+    if (result.status === 'failed' && result.total > 1) label += ' (trame ' + (result.seq + 1) + ')';
     const progressEl = msgEl.querySelector('.tx-progress');
     if (progressEl) progressEl.remove();
-    if (cancelled) {
-      msgEl.classList.add('cancelled');
+    const by = result.status === 'confirmed' ? result.by || '' : '';
+    const statusEl = msgEl.querySelector('.link-status');
+    if (statusEl) statusEl.innerHTML = txStatusHtml(label, by);
+    if (r.cls) msgEl.classList.add(r.cls);
+    if (msgEl._msg) {
+      msgEl._msg.status = label;
+      if (by) msgEl._msg.ackBy = by;
     }
+    msgEl.classList.remove('sending'); // declenche l'enregistrement dans l'historique
   }
 
   async function cancelMessage() {
-    await modem.cancelTransmit();
+    link.cancel();
   }
 
-  function addMessage(text, type, sending = false, txDuration = 0) {
+  function addMessage(text, type, sending = false, txDuration = 0, call = '') {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     const msg = {
       text: text,
+      call: call,
       type: type,
       time: timeStr,
       timestamp: now.getTime()
@@ -319,16 +468,17 @@
     msgEl.className = `message ${type}${sending ? ' sending' : ''}`;
 
     let metaExtra = '';
-    if (type === 'sent' && sending && txDuration > 0) {
-      metaExtra = ' <span class="tx-progress">' + txDuration.toFixed(0) + 's</span>';
-    } else if (type === 'sent' && !sending) {
-      metaExtra = '';
+    if (type === 'sent' && sending) {
+      metaExtra = ' <span class="link-status"></span>'
+        + (txDuration > 0 ? ' <span class="tx-progress">~' + formatDuration(txDuration) + '</span>' : '');
     }
     const sourceTag = type === 'received' ? ' <span class="rx-source">FT8</span>' : '';
     msgEl.innerHTML = `
+      ${type === 'received' ? '<div class="msg-call"></div>' : callSpan(call, 'div', 'msg-call')}
       <div class="msg-text">${escapeHtml(text)}</div>
       <div class="msg-meta">${timeStr}${metaExtra}${sourceTag}</div>
     `;
+    if (type === 'received') setCallEl(msgEl.querySelector('.msg-call'), call);
 
     // Remove system message if it exists
     const sysMsg = messagesEl.querySelector('.system-msg');
@@ -337,6 +487,7 @@
     }
 
     messagesEl.appendChild(msgEl);
+    msgEl._msg = msg;
     scrollToBottom();
 
     // Save when transmission is done
@@ -371,9 +522,11 @@
     history.forEach(msg => {
       const msgEl = document.createElement('div');
       msgEl.className = `message ${msg.type}`;
+      const status = msg.status ? ` <span class="link-status">${txStatusHtml(msg.status, msg.ackBy)}</span>` : '';
       msgEl.innerHTML = `
+        ${callSpan(msg.call, 'div', 'msg-call')}
         <div class="msg-text">${escapeHtml(msg.text)}</div>
-        <div class="msg-meta">${msg.time}</div>
+        <div class="msg-meta">${msg.time}${status}</div>
       `;
       messagesEl.appendChild(msgEl);
     });
@@ -582,10 +735,14 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard' };
+    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '' };
     try {
       const saved = localStorage.getItem('sonochat-settings');
-      return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+      if (!saved) return defaults;
+      const settings = { ...defaults, ...JSON.parse(saved) };
+      // v1 enregistrait « Accuses » coche par defaut : on repart du nouveau defaut (decoche)
+      if (!settings.v) settings.ack = false;
+      return settings;
     } catch {
       return defaults;
     }
@@ -598,9 +755,62 @@
       pttSignal: settingPttSignal.value,
       pttActiveHigh: settingPttLevel.value === 'high',
       txMode: settingTxMode.value,
+      ack: settingAck.checked,
+      callsign: myCallsign(),
+      v: 2,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
     modem.updateSettings({ ...settings, volume: settings.volume / 100 });
+  }
+
+  // === Annuaire ===
+  function loadDirectory() {
+    try {
+      const saved = localStorage.getItem('sonochat-directory');
+      directory = saved ? JSON.parse(saved) : {};
+    } catch {
+      directory = {};
+    }
+  }
+
+  function saveDirectory() {
+    try {
+      localStorage.setItem('sonochat-directory', JSON.stringify(directory));
+    } catch (e) {
+      console.warn('Annuaire non enregistre:', e);
+    }
+  }
+
+  function updateDirectoryStatus(extra) {
+    const n = Object.keys(directory).length;
+    directoryStatus.textContent = (n ? n + ' indicatif' + (n > 1 ? 's' : '') + ' dans l\'annuaire' : 'Annuaire vide')
+      + (extra ? ' — ' + extra : '');
+    btnDirectoryClear.disabled = n === 0;
+  }
+
+  function importDirectory() {
+    const file = directoryFile.files && directoryFile.files[0];
+    directoryFile.value = ''; // permet de reimporter le meme fichier
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = parseDirectory(reader.result);
+      let report = r.imported + ' entree' + (r.imported > 1 ? 's' : '') + ' importee' + (r.imported > 1 ? 's' : '');
+      if (r.skipped.length) {
+        const lines = r.skipped.slice(0, 10).join(', ') + (r.skipped.length > 10 ? '...' : '');
+        report += ', ' + r.skipped.length + ' ligne' + (r.skipped.length > 1 ? 's' : '') + ' ignoree' + (r.skipped.length > 1 ? 's' : '') + ' (' + lines + ')';
+      }
+      if (r.imported === 0) {
+        updateDirectoryStatus('aucune entree valide, annuaire inchange');
+        return;
+      }
+      directory = r.map; // un import remplace l'annuaire
+      saveDirectory();
+      refreshCalls();
+      updateDirectoryStatus(report);
+    };
+    reader.onerror = () => updateDirectoryStatus('lecture du fichier impossible');
+    reader.readAsText(file);
   }
 
   // === History persistence ===
@@ -686,7 +896,7 @@
       const hadController = !!navigator.serviceWorker.controller;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!hadController) return; // premiere installation, rien a recharger
-        if (modem && (modem.transmitting || modem.listening)) return;
+        if (modem && (modem.transmitting || modem.listening || (link && link.busy))) return;
         location.reload();
       });
       navigator.serviceWorker.register('./sw.js')

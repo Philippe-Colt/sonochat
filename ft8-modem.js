@@ -28,20 +28,34 @@ const FT8 = {
   NUM_DATA_SYMBOLS: 58,
   NUM_SYNC_SYMBOLS: 21,
   TX_DURATION: 12.64,         // 79 * 0.16
+  TX_MUTE_TAIL_MS: 300,       // silence RX apres emission (anti auto-decodage)
 
   // Extended modes
   MODE_STANDARD: 'standard',
   MODE_MULTI_FRAME: 'multi-frame',
   MODE_EXTENDED: 'extended',
 
-  // Multi-frame
-  MULTI_FRAME_USEFUL_CHARS: 10,  // 13 - 3 (header "N/T")
-  MULTI_FRAME_MAX_CHUNKS: 13,
+  // Multi-frame (trames DATA binaires, voir arq.js)
+  MULTI_FRAME_USEFUL_CHARS: 10,
+  MULTI_FRAME_MAX_CHUNKS: 16,
   MULTI_FRAME_GAP: 0.5,          // seconds between frames
+
+  // Telemetrie FT8 (i3=0, n3=5) : 71 bits libres, conteneur des trames du protocole
+  N3_TELEMETRY: 5,
 
   // Extended frame
   EXTENDED_BLOCK_SYMBOLS: 72,     // S7 D29 S7 D29 per block
   EXTENDED_MAX_BLOCKS: 10,
+
+  // Reception
+  RX_MAX_CANDIDATES: 6,          // distinct time slots refined + decoded per pass
+  // < 36: an extended frame has a Costas every 36 symbols, so a half-block
+  // shifted window syncs as well as the true one and must not suppress it
+  RX_MIN_CANDIDATE_SPACING: 20,  // symbols between two candidates of a pass
+  RX_UNDECODED_MIN_SCORE: 40,    // Costas score of a lost frame worth reporting
+  RX_UNDECODED_SETTLE: 3,        // s after a lost frame before reporting it
+  RX_TAIL_SYMBOLS: 4,            // symbols checked after a text frame (continuation)
+  RX_NOISE_CONTRAST: 3.9,        // mean max/mean-others tone ratio over 4 symbols of noise (measured)
 
   // GFSK
   BT: 2.0,                   // Gaussian filter BT product
@@ -249,7 +263,8 @@ class FT8Modem {
     this.pttActiveHigh = true;    // true = assert high for TX
 
     // Callbacks
-    this.onReceive = null;
+    this.onFrame = null;      // ({text, telemetry, ext, blocks, absPos, absEnd, score})
+    this.onUndecoded = null;  // ({absPos, score}) : synchro forte mais LDPC en echec
     this.onSpectrumData = null;
     this.onStatusChange = null;
 
@@ -261,8 +276,11 @@ class FT8Modem {
     // Precomputed GFSK pulse (computed on first use)
     this._gfskPulseCache = null;
 
-    // Multi-frame reassembly buffer
-    this._multiFrameBuffer = {};
+    // Deduplication by absolute position (see _resetRxState)
+    this._absWritten = 0;
+    this._decodedSpans = [];
+    this._reportedUndecoded = [];
+    this._muteUntil = 0;
 
     // TX cancel support
     this._txAborted = false;
@@ -340,6 +358,35 @@ class FT8Modem {
     }
 
     return text.trimEnd();
+  }
+
+  /**
+   * Encode a 71-bit value (BigInt) as an FT8 telemetry payload (i3=0, n3=5).
+   */
+  static encodeTelemetry(value71) {
+    const bits = new Uint8Array(77);
+    for (let i = 0; i < 71; i++) {
+      bits[i] = Number((value71 >> BigInt(70 - i)) & 1n);
+    }
+    const n3 = FT8.N3_TELEMETRY;
+    bits[71] = (n3 >> 2) & 1;
+    bits[72] = (n3 >> 1) & 1;
+    bits[73] = n3 & 1;
+    return bits;
+  }
+
+  /**
+   * Decode an FT8 telemetry payload back to its 71-bit value, or null.
+   */
+  static decodeTelemetry(bits) {
+    const i3 = (bits[74] << 2) | (bits[75] << 1) | bits[76];
+    const n3 = (bits[71] << 2) | (bits[72] << 1) | bits[73];
+    if (i3 !== 0 || n3 !== FT8.N3_TELEMETRY) return null;
+    let val = 0n;
+    for (let i = 0; i < 71; i++) {
+      val = (val << 1n) | BigInt(bits[i]);
+    }
+    return val;
   }
 
   // ============================================================
@@ -557,8 +604,13 @@ class FT8Modem {
    */
   static textToSymbols(text) {
     // 1. Text -> 77 payload bits
-    const payload = FT8Modem.encodeText(text);
+    return FT8Modem.payloadToSymbols(FT8Modem.encodeText(text));
+  }
 
+  /**
+   * Encoding pipeline from 77 payload bits -> 79 channel symbols
+   */
+  static payloadToSymbols(payload) {
     // 2. CRC-14
     const crc = FT8Modem.computeCRC14(payload);
     const infoBits = new Uint8Array(91);
@@ -586,24 +638,6 @@ class FT8Modem {
     symbols.set(FT8.COSTAS, 72);      // positions 72-78
 
     return symbols;
-  }
-
-  /**
-   * Split long text into multi-frame chunks with sequence headers.
-   * Each chunk: "N/T" + up to 10 chars = max 13 chars FT8 free text.
-   * @returns {string[]} array of 13-char strings
-   */
-  static splitMultiFrame(text) {
-    const chunkSize = FT8.MULTI_FRAME_USEFUL_CHARS; // 10
-    const chunks = [];
-    for (let i = 0; i < text.length; i += chunkSize) {
-      chunks.push(text.substring(i, i + chunkSize));
-    }
-    const total = chunks.length;
-    return chunks.map((c, idx) => {
-      const header = (idx + 1) + '/' + total;
-      return (header + c).substring(0, 13);
-    });
   }
 
   /**
@@ -811,6 +845,9 @@ class FT8Modem {
   /** Internal: end transmission (PTT off, state reset). */
   async _endTransmit() {
     await this._pttOff();
+    // Le micro entend encore la fin de l'emission (latence de sortie) : on
+    // prolonge le silence du ring buffer pour ne jamais se decoder soi-meme.
+    this._muteUntil = performance.now() + FT8.TX_MUTE_TAIL_MS;
     this.transmitting = false;
     this._txAborted = false;
     if (this.onStatusChange) {
@@ -819,71 +856,50 @@ class FT8Modem {
   }
 
   /**
-   * Transmit text as FT8 GFSK audio.
+   * Transmit one or more symbol sequences back to back under one PTT.
+   * @param {Uint8Array[]} symbolList
+   * @param {{gap?: number, onProgress?: function(number, number)}} opts
+   * @returns {Promise<{aborted: boolean}>}
    */
-  async transmit(text) {
-    if (this.transmitting) return;
+  async transmitSymbols(symbolList, opts = {}) {
+    if (this.transmitting) throw new Error('Emission deja en cours');
     this.transmitting = true;
     this._txAborted = false;
     if (this.onStatusChange) this.onStatusChange('transmitting');
 
     const ctx = this._ensureAudioContext();
-    const symbols = FT8Modem.textToSymbols(text);
-    const waveform = this.generateWaveform(symbols, ctx.sampleRate);
-
-    await this._pttOn();
-    await this._playWaveform(waveform, ctx);
-    await this._endTransmit();
+    const gap = opts.gap !== undefined ? opts.gap : FT8.MULTI_FRAME_GAP;
+    let aborted = false;
+    try {
+      await this._pttOn();
+      for (let i = 0; i < symbolList.length; i++) {
+        if (this._txAborted) break;
+        if (opts.onProgress) opts.onProgress(i + 1, symbolList.length);
+        const waveform = this.generateWaveform(symbolList[i], ctx.sampleRate);
+        await this._playWaveform(waveform, ctx);
+        if (!this._txAborted && i < symbolList.length - 1) {
+          await new Promise(r => setTimeout(r, gap * 1000));
+        }
+      }
+    } finally {
+      aborted = this._txAborted;
+      await this._endTransmit();
+    }
+    return { aborted };
   }
 
   /**
-   * Transmit long text as sequential standard FT8 frames (Mode 1).
+   * Transmit text as FT8 GFSK audio.
    */
-  async transmitMultiFrame(text) {
-    if (this.transmitting) return;
-    this.transmitting = true;
-    this._txAborted = false;
-    if (this.onStatusChange) this.onStatusChange('transmitting');
-
-    const chunks = FT8Modem.splitMultiFrame(text);
-    const ctx = this._ensureAudioContext();
-
-    await this._pttOn();
-
-    for (let i = 0; i < chunks.length; i++) {
-      if (this._txAborted) break;
-      console.log('[FT8 TX] multi-frame ' + (i + 1) + '/' + chunks.length + ': "' + chunks[i] + '"');
-      if (this.onTxProgress) this.onTxProgress(i + 1, chunks.length);
-      const symbols = FT8Modem.textToSymbols(chunks[i]);
-      const waveform = this.generateWaveform(symbols, ctx.sampleRate);
-      await this._playWaveform(waveform, ctx);
-
-      // Gap between frames (except after last)
-      if (!this._txAborted && i < chunks.length - 1) {
-        await new Promise(r => setTimeout(r, FT8.MULTI_FRAME_GAP * 1000));
-      }
-    }
-
-    await this._endTransmit();
+  transmit(text) {
+    return this.transmitSymbols([FT8Modem.textToSymbols(text)]);
   }
 
   /**
    * Transmit long text as a single extended frame (Mode 2).
    */
-  async transmitExtended(text) {
-    if (this.transmitting) return;
-    this.transmitting = true;
-    this._txAborted = false;
-    if (this.onStatusChange) this.onStatusChange('transmitting');
-
-    const ctx = this._ensureAudioContext();
-    const symbols = FT8Modem.textToExtendedSymbols(text);
-    console.log('[FT8 TX] extended: ' + symbols.length + ' symbols');
-    const waveform = this.generateWaveform(symbols, ctx.sampleRate);
-
-    await this._pttOn();
-    await this._playWaveform(waveform, ctx);
-    await this._endTransmit();
+  transmitExtended(text) {
+    return this.transmitSymbols([FT8Modem.textToExtendedSymbols(text)]);
   }
 
   // ============================================================
@@ -933,10 +949,14 @@ class FT8Modem {
     this._scriptNode = ctx.createScriptProcessor(bufSize, 1, 1);
     this._scriptNode.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0);
+      // Pendant notre propre emission, le micro entend le haut-parleur : on
+      // ecrit du silence pour ne pas decoder nos trames (ni nos accuses).
+      const mute = this.transmitting || performance.now() < this._muteUntil;
       for (let i = 0; i < input.length; i++) {
-        this._ringBuffer[this._ringWritePos] = input[i];
+        this._ringBuffer[this._ringWritePos] = mute ? 0 : input[i];
         this._ringWritePos = (this._ringWritePos + 1) % this._ringBufferLen;
       }
+      this._absWritten += input.length;
       // Pass through silence (required for ScriptProcessor to work)
       e.outputBuffer.getChannelData(0).fill(0);
     };
@@ -944,8 +964,7 @@ class FT8Modem {
     this._scriptNode.connect(ctx.destination);
 
     this.listening = true;
-    this._lastDecodePos = 0;
-    this._decodedSet = new Set(); // avoid duplicate decodes
+    this._resetRxState();
     if (this.onStatusChange) this.onStatusChange('listening');
 
     this._startDecoding();
@@ -973,7 +992,6 @@ class FT8Modem {
       this.mediaStream = null;
     }
     this._ringBuffer = null;
-    this._decodedSet = null;
     if (this.onStatusChange) this.onStatusChange('idle');
   }
 
@@ -1141,6 +1159,8 @@ class FT8Modem {
     const maxExtract = 15 + FT8.EXTENDED_MAX_BLOCKS * FT8.EXTENDED_BLOCK_SYMBOLS * FT8.SYMBOL_PERIOD;
     const extractLen = Math.min(Math.round(sampleRate * maxExtract), this._ringBufferLen);
     const audio = new Float32Array(extractLen);
+    // Absolute sample index of audio[0]: lets us recognise a frame across passes
+    const absStart = this._absWritten - extractLen;
     let readPos = (this._ringWritePos - extractLen + this._ringBufferLen) % this._ringBufferLen;
     for (let i = 0; i < extractLen; i++) {
       audio[i] = this._ringBuffer[(readPos + i) % this._ringBufferLen];
@@ -1194,6 +1214,13 @@ class FT8Modem {
 
     const t1 = performance.now();
 
+    // Frames already decoded (by absolute position) are excluded from the
+    // search: an old frame is never emitted twice, never starves a new one,
+    // and the same frame repeated later (ARQ) is a new position, so decoded.
+    const frameLen = FT8.NUM_SYMBOLS * nsps;
+    this._pruneSpans(absStart);
+    const covered = (off) => this._isCovered(absStart + off + frameLen / 2);
+
     // ================================================================
     // PASS 2: Coarse Costas search (pure lookups on power matrix)
     // ================================================================
@@ -1201,8 +1228,7 @@ class FT8Modem {
     if (maxStartPos < 1) return;
 
     const syncPositions = [0, 36, 72];
-    const NUM_COARSE = 6;
-    const coarseCandidates = [];
+    const coarseAll = [];
 
     // Test each frequency shift (in whole bins = 6.25 Hz steps)
     for (let binShift = -searchBins; binShift <= searchBins; binShift++) {
@@ -1210,15 +1236,11 @@ class FT8Modem {
 
       for (let sp = 0; sp <= maxStartPos; sp++) {
         let score = 0;
-        let valid = true;
 
-        for (let si = 0; si < 3 && valid; si++) {
+        for (let si = 0; si < 3; si++) {
           const syncStart = syncPositions[si];
           for (let i = 0; i < 7; i++) {
-            const pos = sp + syncStart + i;
-            if (pos >= numPos) { valid = false; break; }
-
-            const base = pos * numBins;
+            const base = (sp + syncStart + i) * numBins;
             const expected = FT8.COSTAS[i];
             const sigP = power[base + toneBase + expected];
             let noiseP = 0;
@@ -1234,18 +1256,21 @@ class FT8Modem {
           }
         }
 
-        if (!valid) continue;
-        if (score > 4.0) {
+        if (score > 4.0 && !covered(sp * nsps)) {
           const fHz = binShift * binWidth;
-          const entry = { sampleOff: sp * nsps, fHz, freq0: this.baseFreq + fHz, score };
-          if (coarseCandidates.length < NUM_COARSE) {
-            coarseCandidates.push(entry);
-            coarseCandidates.sort((a, b) => b.score - a.score);
-          } else if (score > coarseCandidates[NUM_COARSE - 1].score) {
-            coarseCandidates[NUM_COARSE - 1] = entry;
-            coarseCandidates.sort((a, b) => b.score - a.score);
-          }
+          coarseAll.push({ sampleOff: sp * nsps, sp, fHz, freq0: this.baseFreq + fHz, score });
         }
+      }
+    }
+
+    // Keep the best candidate of each distinct time slot (non-maximum
+    // suppression), so several frames present in the buffer are all tried.
+    coarseAll.sort((a, b) => b.score - a.score);
+    const coarseCandidates = [];
+    for (const c of coarseAll) {
+      if (coarseCandidates.length >= FT8.RX_MAX_CANDIDATES) break;
+      if (coarseCandidates.every(o => Math.abs(o.sp - c.sp) >= FT8.RX_MIN_CANDIDATE_SPACING)) {
+        coarseCandidates.push(c);
       }
     }
 
@@ -1260,110 +1285,185 @@ class FT8Modem {
     await this._yieldToBrowser();
 
     // ================================================================
-    // PASS 3: Fine sub-symbol refinement on top 2 candidates (Goertzel)
+    // PASS 3 + DECODE: fine sub-symbol refinement, then LDPC, per candidate
     // ================================================================
     const fineTimeStep = Math.max(1, Math.round(nsps / 4));
     const fineFreqStep = 1.0; // Hz
     const fineTimeRange = nsps;
     const fineFreqRange = binWidth / 2 + 1; // ±4.125 Hz
+    const NUM_FINE = 2;
+    const failures = [];
 
-    const NUM_FINE = 3;
-    const fineCandidates = [];
+    for (const coarse of coarseCandidates) {
+      // A previous candidate of this pass (e.g. an extended frame) may cover it
+      if (covered(coarse.sampleOff)) continue;
 
-    for (const coarse of coarseCandidates.slice(0, 2)) {
+      const fineCandidates = [];
       const tMin = Math.max(0, coarse.sampleOff - fineTimeRange);
-      const tMax = Math.min(audio.length - FT8.NUM_SYMBOLS * nsps, coarse.sampleOff + fineTimeRange);
+      const tMax = Math.min(audio.length - frameLen, coarse.sampleOff + fineTimeRange);
 
-      for (let fHz = coarse.fHz - fineFreqRange; fHz <= coarse.fHz + fineFreqRange; fHz += fineFreqStep) {
-        const freq0 = this.baseFreq + fHz;
-        for (let sOff = tMin; sOff <= tMax; sOff += fineTimeStep) {
-          const score = this._costasScoreGoertzel(audio, sampleRate, nsps, sOff, freq0);
-
-          if (fineCandidates.length < NUM_FINE) {
-            fineCandidates.push({ sampleOff: sOff, fHz, freq0, score });
-            fineCandidates.sort((a, b) => b.score - a.score);
-          } else if (score > fineCandidates[NUM_FINE - 1].score) {
-            fineCandidates[NUM_FINE - 1] = { sampleOff: sOff, fHz, freq0, score };
-            fineCandidates.sort((a, b) => b.score - a.score);
-          }
+      const keep = (sOff, fHz, score) => {
+        const entry = { sampleOff: sOff, fHz, freq0: this.baseFreq + fHz, score };
+        if (fineCandidates.length < NUM_FINE) {
+          fineCandidates.push(entry);
+        } else if (score > fineCandidates[NUM_FINE - 1].score) {
+          fineCandidates[NUM_FINE - 1] = entry;
+        } else {
+          return;
         }
+        fineCandidates.sort((a, b) => b.score - a.score);
+      };
+
+      // Separable search (frequency at the coarse time, then time at the best
+      // frequency): 18 Costas evaluations instead of 81, several candidates
+      // per pass stay affordable on a phone.
+      let bestF = coarse.fHz, bestFScore = -Infinity;
+      for (let fHz = coarse.fHz - fineFreqRange; fHz <= coarse.fHz + fineFreqRange; fHz += fineFreqStep) {
+        const score = this._costasScoreGoertzel(audio, sampleRate, nsps, coarse.sampleOff, this.baseFreq + fHz);
+        if (score > bestFScore) { bestFScore = score; bestF = fHz; }
+      }
+      for (let sOff = tMin; sOff <= tMax; sOff += fineTimeStep) {
+        keep(sOff, bestF, this._costasScoreGoertzel(audio, sampleRate, nsps, sOff, this.baseFreq + bestF));
       }
       await this._yieldToBrowser();
-    }
 
-    if (fineCandidates.length === 0) return;
+      let decoded = false;
+      for (const cand of fineCandidates) {
+        const refinedFreq0 = this._refineFrequencyGoertzel(
+          audio, sampleRate, nsps, cand.sampleOff, cand.freq0
+        );
+        const payload = this._decodeWindow(audio, sampleRate, nsps, cand.sampleOff, refinedFreq0);
+        if (!payload) continue;
 
-    const t3 = performance.now();
-    console.log('[FT8 RX] fine: best=' + fineCandidates[0].score.toFixed(0) + ' fHz=' + fineCandidates[0].fHz.toFixed(1) + ' off=' + fineCandidates[0].sampleOff + ' (' + (t3 - t2 | 0) + 'ms)');
+        const text = FT8Modem.decodeText(payload);
+        const telemetry = text === null ? FT8Modem.decodeTelemetry(payload) : null;
+        if (text === null && telemetry === null) continue; // other FT8 message types
 
-    // ================================================================
-    // DECODE: try each fine candidate
-    // ================================================================
-    for (const cand of fineCandidates) {
-      // Parabolic frequency refinement
-      const refinedFreq0 = this._refineFrequencyGoertzel(
-        audio, sampleRate, nsps, cand.sampleOff, cand.freq0
-      );
+        let spanStart = cand.sampleOff;
+        let spanEnd = cand.sampleOff + frameLen;
+        let frame = { text, telemetry, ext: false, blocks: null, score: cand.score };
 
-      // Compute magnitude matrix with Goertzel
-      const mag = this._computeMagnitudesGoertzel(
-        audio, sampleRate, nsps, cand.sampleOff, refinedFreq0
-      );
-      if (!mag) continue;
-
-      const llr = this._extractLLRNormalized(mag);
-      if (!llr) continue;
-
-      const info91 = FT8Modem.ldpcDecode(llr, 50);
-      if (!info91) {
-        console.log('[FT8 RX] LDPC failed (score=' + cand.score.toFixed(0) + ')');
-        continue;
-      }
-
-      const payload = info91.slice(0, 77);
-      const text = FT8Modem.decodeText(payload);
-      if (text === null) continue;
-
-      // Try extended frame FIRST (before dedup on first block)
-      const extResult = this._tryExtendedDecode(
-        audio, sampleRate, nsps, cand.sampleOff, refinedFreq0, text, cand.score
-      );
-
-      if (extResult) {
-        // Dedup on full extended text
-        if (this._decodedSet.has(extResult.text)) continue;
-        // Mark full text + each individual block
-        const allTexts = [extResult.text, ...extResult.blocks];
-        for (const t of allTexts) {
-          this._decodedSet.add(t);
-          setTimeout(() => this._decodedSet && this._decodedSet.delete(t), 60000);
+        if (text !== null) {
+          const ext = this._tryExtendedDecode(
+            audio, sampleRate, nsps, cand.sampleOff, refinedFreq0, text, cand.score
+          );
+          if (ext) {
+            spanStart = ext.firstOff;
+            spanEnd = ext.lastOff + frameLen;
+            frame = { text: ext.text, telemetry: null, ext: true, blocks: ext.blocks, score: cand.score };
+          }
         }
+
+        // Text frames: does the signal go on after the frame? The first block
+        // of an extended message decodes on its own before the next block is
+        // complete; the receiver must not answer while the sender still talks.
+        if (text !== null) {
+          const cont = this._signalContinues(audio, sampleRate, nsps, spanEnd - frameLen, refinedFreq0);
+          if (cont === null) break; // tail not captured yet: retry next pass
+          frame.continues = cont;
+        } else {
+          frame.continues = false;
+        }
+
+        frame.absPos = absStart + spanStart;
+        frame.absEnd = absStart + spanEnd;
+        frame.sampleRate = sampleRate;
+        this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd });
+
         const elapsed = performance.now() - t0;
-        console.log('[FT8 RX] EXTENDED: "' + extResult.text + '" (' + extResult.numBlocks + ' blocs) in ' + (elapsed | 0) + 'ms');
-        if (this.onReceive) this.onReceive(extResult.text);
-        return;
+        console.log('[FT8 RX] ' + (frame.ext ? 'EXTENDED (' + frame.blocks.length + ' blocs)' : text !== null ? 'TEXT' : 'TELEMETRY')
+          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' in ' + (elapsed | 0) + 'ms');
+        if (this.onFrame) this.onFrame(frame);
+        decoded = true;
+        break;
       }
 
-      // Standard single block — dedup check
-      if (this._decodedSet.has(text)) continue;
-      this._decodedSet.add(text);
-      setTimeout(() => this._decodedSet && this._decodedSet.delete(text), 30000);
-
-      // Try multi-frame reassembly
-      const reassembled = this._tryMultiFrameReassemble(text);
-      if (reassembled === null) {
-        const elapsed = performance.now() - t0;
-        console.log('[FT8 RX] DECODED: "' + text + '" in ' + (elapsed | 0) + 'ms');
-        if (this.onReceive) this.onReceive(text);
-      } else if (typeof reassembled === 'string') {
-        this._decodedSet.add(reassembled);
-        setTimeout(() => this._decodedSet && this._decodedSet.delete(reassembled), 60000);
-        const elapsed = performance.now() - t0;
-        console.log('[FT8 RX] MULTI-FRAME: "' + reassembled + '" in ' + (elapsed | 0) + 'ms');
-        if (this.onReceive) this.onReceive(reassembled);
-      }
-      return;
+      if (!decoded && fineCandidates.length > 0) failures.push(fineCandidates[0]);
     }
+
+    // Strong sync but no valid codeword: a frame was there and was lost.
+    // Checked after the whole pass (a misaligned window over a frame decoded
+    // later in the pass is covered by then), reported once, only once it is
+    // in the past, and only if the signal has stopped after it: a window
+    // shifted by 36 symbols over a frame still being received syncs strongly
+    // too, and answering it would talk over the sender.
+    for (const best of failures) {
+      const absPos = absStart + best.sampleOff;
+      const settled = absPos + frameLen <= this._absWritten - FT8.RX_UNDECODED_SETTLE * sampleRate;
+      if (best.score >= FT8.RX_UNDECODED_MIN_SCORE && settled && !covered(best.sampleOff)
+          && !this._reportedUndecoded.some(p => Math.abs(p - absPos) < frameLen / 2)
+          && this._signalContinues(audio, sampleRate, nsps, best.sampleOff, best.freq0) === false) {
+        this._reportedUndecoded.push(absPos);
+        console.log('[FT8 RX] undecoded strong frame (score=' + best.score.toFixed(0) + ')');
+        if (this.onUndecoded) this.onUndecoded({ absPos, score: best.score, sampleRate });
+      }
+    }
+  }
+
+  /** Magnitudes -> LLR -> LDPC for one 79-symbol window: 77 payload bits or null. */
+  _decodeWindow(audio, sampleRate, nsps, sampleOff, freq0) {
+    const mag = this._computeMagnitudesGoertzel(audio, sampleRate, nsps, sampleOff, freq0);
+    if (!mag) return null;
+    const llr = this._extractLLRNormalized(mag);
+    if (!llr) return null;
+    const info91 = FT8Modem.ldpcDecode(llr, 50);
+    if (!info91) return null;
+    // All-zero codeword: valid for LDPC and for CRC-14 alike, but it is what
+    // silence (e.g. our muted buffer during TX) decodes to. Never a real frame.
+    if (!info91.some(b => b)) return null;
+    return info91.slice(0, 77);
+  }
+
+  /**
+   * Mean tone contrast (strongest of the 8 tones / mean of the 7 others) over
+   * nsym symbols. ~3.9 on noise (4 symbols), much higher on an FT8 signal.
+   */
+  _toneContrast(audio, sampleRate, nsps, sampleOff, freq0, symbolIdx) {
+    const coeffs = this._goertzelCoeffs(freq0, sampleRate, nsps);
+    let sum = 0;
+    for (const s of symbolIdx) {
+      const p = this._goertzel8(audio, sampleOff + s * nsps, nsps, coeffs);
+      let max = 0, total = 0;
+      for (let t = 0; t < 8; t++) { total += p[t]; if (p[t] > max) max = p[t]; }
+      const rest = (total - max) / 7;
+      sum += rest > 0 ? max / rest : 100;
+    }
+    return sum / symbolIdx.length;
+  }
+
+  /**
+   * Is the signal still present right after the 79-symbol window at frameOff?
+   * @returns {boolean|null} null when the tail is not in the buffer yet
+   */
+  _signalContinues(audio, sampleRate, nsps, frameOff, freq0) {
+    const tailOff = frameOff + FT8.NUM_SYMBOLS * nsps;
+    const n = FT8.RX_TAIL_SYMBOLS;
+    if (tailOff + n * nsps > audio.length) return null;
+    const dataIdx = [];
+    for (let s = 7; s < 36; s++) dataIdx.push(s);
+    for (let s = 43; s < 72; s++) dataIdx.push(s);
+    const inFrame = this._toneContrast(audio, sampleRate, nsps, frameOff, freq0, dataIdx);
+    const tailIdx = [];
+    for (let s = 0; s < n; s++) tailIdx.push(s);
+    const tail = this._toneContrast(audio, sampleRate, nsps, tailOff, freq0, tailIdx);
+    // Geometric mean between the noise floor and the frame's own contrast
+    return tail > Math.sqrt(Math.max(inFrame, FT8.RX_NOISE_CONTRAST) * FT8.RX_NOISE_CONTRAST);
+  }
+
+  _resetRxState() {
+    this._absWritten = 0;
+    this._decodedSpans = [];
+    this._reportedUndecoded = [];
+  }
+
+  /** Forget spans that have left the ring buffer. */
+  _pruneSpans(absStart) {
+    this._decodedSpans = this._decodedSpans.filter(sp => sp.end > absStart);
+    this._reportedUndecoded = this._reportedUndecoded.filter(p => p > absStart - this._ringBufferLen);
+  }
+
+  _isCovered(absSample) {
+    return this._decodedSpans.some(sp => absSample >= sp.start && absSample < sp.end);
   }
 
   /**
@@ -1373,100 +1473,48 @@ class FT8Modem {
    */
   _tryExtendedDecode(audio, sampleRate, nsps, sampleOff, freq0, firstText, firstScore) {
     const texts = [firstText];
-    const blockStep = FT8.EXTENDED_BLOCK_SYMBOLS; // 72
+    const blockStep = FT8.EXTENDED_BLOCK_SYMBOLS * nsps; // 72 symbols
     // Require at least 40% of the first block's Costas score to accept a continuation
     const minScore = Math.max(20, (firstScore || 50) * 0.4);
 
     // Decode the 79-symbol window at a block boundary, or null if absent/invalid
     const decodeBlockAt = (blockOff) => {
       if (blockOff < 0 || blockOff + FT8.NUM_SYMBOLS * nsps > audio.length) return null;
-
       const score = this._costasScoreGoertzel(audio, sampleRate, nsps, blockOff, freq0);
       if (score < minScore) return null; // No valid block here
-
-      const mag = this._computeMagnitudesGoertzel(audio, sampleRate, nsps, blockOff, freq0);
-      if (!mag) return null;
-
-      const llr = this._extractLLRNormalized(mag);
-      if (!llr) return null;
-
-      const info91 = FT8Modem.ldpcDecode(llr, 50);
-      if (!info91) return null;
-
-      return FT8Modem.decodeText(info91.slice(0, 77));
+      const payload = this._decodeWindow(audio, sampleRate, nsps, blockOff, freq0);
+      return payload ? FT8Modem.decodeText(payload) : null;
     };
 
     // The best Costas candidate may be any block of the frame, not only the
     // first: search backward for preceding blocks, then forward.
-    for (let b = 1; texts.length < FT8.EXTENDED_MAX_BLOCKS; b++) {
-      const text = decodeBlockAt(sampleOff - b * blockStep * nsps);
+    let firstOff = sampleOff;
+    let lastOff = sampleOff;
+    while (texts.length < FT8.EXTENDED_MAX_BLOCKS) {
+      const text = decodeBlockAt(firstOff - blockStep);
       if (text === null) break;
       texts.unshift(text);
-      console.log('[FT8 RX] ext block -' + b + ': "' + text + '"');
+      firstOff -= blockStep;
     }
-
-    for (let b = 1; texts.length < FT8.EXTENDED_MAX_BLOCKS; b++) {
-      const text = decodeBlockAt(sampleOff + b * blockStep * nsps);
+    while (texts.length < FT8.EXTENDED_MAX_BLOCKS) {
+      const text = decodeBlockAt(lastOff + blockStep);
       if (text === null) break;
       texts.push(text);
-      console.log('[FT8 RX] ext block +' + b + ': "' + text + '"');
+      lastOff += blockStep;
     }
 
     if (texts.length > 1) {
+      // Every block but the last carries exactly 13 characters (see
+      // textToExtendedSymbols), so trailing spaces of inner blocks are content.
+      const joined = texts.slice(0, -1).map(t => t.padEnd(13, ' ')).join('') + texts[texts.length - 1];
       return {
-        text: texts.join('').trimEnd(),
-        numBlocks: texts.length,
-        blocks: texts.map(t => t.trimEnd())
+        text: joined.trimEnd(),
+        blocks: texts.map(t => t.trimEnd()),
+        firstOff,
+        lastOff
       };
     }
     return null; // Single block, not an extended frame
-  }
-
-  /**
-   * Try to reassemble multi-frame messages (pattern: "N/TPAYLOAD").
-   * @returns {null} if not a multi-frame message
-   * @returns {string} if fully reassembled
-   * @returns {undefined} if partial (waiting for more frames)
-   */
-  _tryMultiFrameReassemble(text) {
-    const match = text.match(/^(\d)\/(\d)(.{0,10})$/);
-    if (!match) return null;
-
-    const seq = parseInt(match[1]);
-    const total = parseInt(match[2]);
-    const payload = match[3];
-
-    if (seq < 1 || seq > total || total < 2 || total > FT8.MULTI_FRAME_MAX_CHUNKS) return null;
-
-    const key = 'mf' + total;
-    if (!this._multiFrameBuffer[key]) {
-      this._multiFrameBuffer[key] = { chunks: {}, lastSeen: Date.now() };
-    }
-
-    const entry = this._multiFrameBuffer[key];
-    entry.chunks[seq] = payload;
-    entry.lastSeen = Date.now();
-    console.log('[FT8 RX] multi-frame ' + seq + '/' + total + ': "' + payload + '" (' + Object.keys(entry.chunks).length + '/' + total + ' received)');
-
-    // Check completeness
-    if (Object.keys(entry.chunks).length === total) {
-      let fullText = '';
-      for (let i = 1; i <= total; i++) {
-        fullText += entry.chunks[i] || '';
-      }
-      delete this._multiFrameBuffer[key];
-      return fullText.trimEnd();
-    }
-
-    // Clean up old entries (> 2 minutes)
-    const now = Date.now();
-    for (const k in this._multiFrameBuffer) {
-      if (now - this._multiFrameBuffer[k].lastSeen > 120000) {
-        delete this._multiFrameBuffer[k];
-      }
-    }
-
-    return undefined; // Partial
   }
 
   // ============================================================

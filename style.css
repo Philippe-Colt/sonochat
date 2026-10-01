@@ -593,3 +593,175 @@ header h1 {
   background: var(--accent);
   border-color: var(--accent);
 }
+
+/* Accuses de reception (SonoLink) */
+.setting-group .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.setting-group .checkbox-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.link-status {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.message.sending .link-status:empty {
+  display: none;
+}
+
+.message.confirmed .link-status {
+  color: var(--success);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.message.failed .link-status {
+  color: var(--danger);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.message.incomplete {
+  border-left: 3px dashed var(--danger);
+}
+
+/* Indicatifs */
+.message .msg-call {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.message.sent .msg-call {
+  text-align: right;
+}
+
+.message .msg-call:empty {
+  display: none;
+}
+
+.call-ref {
+  font-weight: 700;
+}
+
+.setting-group input#setting-callsign {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  width: 5em;
+  outline: none;
+}
+
+.setting-group input#setting-callsign:focus {
+  border-color: var(--accent);
+}
+
+.setting-group input#setting-callsign.required {
+  border-color: var(--danger);
+}
+
+.setting-info.warning {
+  color: var(--danger);
+}
+
+.directory-controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.directory-controls .serial-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Barre d'emission de la page chat : indicatif, mode, accuses */
+#tx-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.call-badge {
+  flex-shrink: 0;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.call-badge.missing {
+  color: var(--danger);
+  border-style: dashed;
+  background: transparent;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+#tx-bar select {
+  flex: 1;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  outline: none;
+}
+
+#tx-bar select:focus {
+  border-color: var(--accent);
+}
+
+.ack-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ack-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+
+.ack-toggle:has(input:checked) {
+  color: var(--text-primary);
+}

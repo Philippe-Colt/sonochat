@@ -49,14 +49,27 @@
             <canvas id="spectrum-canvas"></canvas>
         </div>
 
+        <div id="tx-bar">
+            <button id="my-call" class="call-badge" type="button" title="Mon indicatif (modifiable dans les parametres)"></button>
+            <select id="setting-tx-mode" title="Mode de transmission">
+                <option value="standard">Standard (11 car.)</option>
+                <option value="multi-frame">Multi-trame (128 car.)</option>
+                <option value="extended">Etendu (128 car.)</option>
+            </select>
+            <label class="ack-toggle" title="Le recepteur confirme chaque trame (multi-trame) ou le message complet (standard, etendu) ; l'emetteur repete jusqu'a 3 fois. Les deux stations doivent cocher et ecouter. Decoche : diffusion vers plusieurs recepteurs.">
+                <input type="checkbox" id="setting-ack">
+                Accuses
+            </label>
+        </div>
+
         <div id="input-area">
             <button id="btn-listen" class="icon-btn listen-btn" title="Ecouter">
                 <svg viewBox="0 0 24 24" width="24" height="24">
                     <path class="mic-icon" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93h2c0 3.31 2.69 6 6 6s6-2.69 6-6h2c0 4.08-3.06 7.44-7 7.93V19h4v2H8v-2h4v-3.07z" fill="currentColor"/>
                 </svg>
             </button>
-            <input type="text" id="msg-input" placeholder="Tapez votre message..." maxlength="13" autocomplete="off">
-            <span id="char-count">0/13</span>
+            <input type="text" id="msg-input" placeholder="Tapez votre message..." maxlength="11" autocomplete="off">
+            <span id="char-count">0/11</span>
             <span id="tx-duration" class="tx-duration-hint"></span>
             <button id="btn-send" class="icon-btn send-btn" title="Envoyer" disabled>
                 <svg viewBox="0 0 24 24" width="24" height="24">
@@ -78,6 +91,21 @@
             </div>
             <div class="panel-body">
                 <div class="setting-group">
+                    <label for="setting-callsign">Indicatif (2 caracteres)</label>
+                    <input type="text" id="setting-callsign" maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ex. PC">
+                    <p class="setting-info">Envoye en tete de chaque message (obligatoire pour emettre). Lettres et chiffres.</p>
+                </div>
+                <div class="setting-group">
+                    <label>Annuaire des indicatifs</label>
+                    <div class="directory-controls">
+                        <button id="btn-directory-import" class="serial-btn">Importer un annuaire</button>
+                        <button id="btn-directory-clear" class="serial-btn">Effacer</button>
+                        <input type="file" id="directory-file" accept=".csv,.txt,text/*" hidden>
+                    </div>
+                    <p id="directory-status" class="setting-info"></p>
+                    <p class="setting-info">Fichier texte ou CSV : une ligne par station, indicatif court puis indicatif long (ex. PC;F4MTX). Sans entree, l'indicatif court est affiche.</p>
+                </div>
+                <div class="setting-group">
                     <label>Volume d'emission</label>
                     <input type="range" id="setting-volume" min="0" max="100" value="80">
                     <span id="volume-val">80%</span>
@@ -85,14 +113,6 @@
                 <div class="setting-group">
                     <label>Frequence de base (Hz)</label>
                     <input type="number" id="setting-base-freq" min="500" max="3000" value="1000" step="50">
-                </div>
-                <div class="setting-group">
-                    <label>Mode de transmission</label>
-                    <select id="setting-tx-mode">
-                        <option value="standard">Standard (13 car.)</option>
-                        <option value="multi-frame">Multi-trame (130 car.)</option>
-                        <option value="extended">Trame etendue (130 car.)</option>
-                    </select>
                 </div>
                 <div class="setting-group">
                     <label>Port serie (PTT)</label>
@@ -128,6 +148,8 @@
     </div>
 
     <script src="ft8-modem.js"></script>
+    <script src="arq.js"></script>
+    <script src="directory.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

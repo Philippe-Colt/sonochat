@@ -6,9 +6,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 DEST=/srv/sonochat
-FILES=(index.html style.css ft8-modem.js app.js sw.js manifest.json icon.svg icon-192.png icon-512.png)
+FILES=(index.html style.css ft8-modem.js arq.js directory.js app.js sw.js manifest.json icon.svg icon-192.png icon-512.png)
 
 node -c ft8-modem.js
+node -c arq.js
+node -c directory.js
 node -c app.js
 node -c sw.js
 

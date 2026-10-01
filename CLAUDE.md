@@ -4,8 +4,12 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 
 ## Architecture
 
-- `ft8-modem.js` — Coeur du protocole FT8 : encodage/décodage, modulation GFSK, démodulation, LDPC, CRC-14
-- `app.js` — Interface chat, gestion UI, spectre, historique localStorage
+- `ft8-modem.js` — Couche radio FT8 : encodage/décodage, modulation GFSK, démodulation, LDPC, CRC-14.
+  Aucune logique de dialogue : émet des listes de symboles, signale chaque trame décodée (`onFrame`)
+- `arq.js` — `SonoLink` : accusés de réception et répétitions (voir plus bas). Sans DOM ni audio
+  (émission, horloge, minuteurs injectés), testable en Node
+- `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long)
+- `app.js` — Interface chat : relie modem ↔ SonoLink, bulles, indicatifs, spectre, historique localStorage
 - `index.html` — Structure HTML de l'app
 - `style.css` — Styles (thème sombre)
 - `sw.js` — Service Worker pour PWA offline
@@ -17,19 +21,82 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 - 79 symboles : S7 D29 S7 D29 S7 (Costas sync + data)
 - Encodage : 77 bits payload → CRC-14 → LDPC(174,91) → Gray code → 58 symboles data
 - Bande passante : 50 Hz, durée : 12.64 s
-- Texte libre : jusqu'à 13 caractères, alphabet base-42
+- Texte libre : jusqu'à 13 caractères, alphabet base-42 (i3=0, n3=0)
+- Télémétrie (i3=0, n3=5) : 71 bits libres, conteneur des trames du protocole SonoLink
+
+## Indicatif et annuaire
+
+- Page de chat (barre au-dessus de la saisie) : son indicatif (touché → paramètres), le mode
+  de transmission et la case « Accusés ». Les autres réglages restent dans les paramètres.
+- Chaque station règle un **indicatif court de 2 caractères** (`A-Z0-9`), obligatoire pour
+  émettre. Sur l'air, il est **en tête de chaque message, sans séparateur** :
+  `PC` + `BONJOUR` → `PCBONJOUR`, dans les 3 modes. Il reste donc 11 car. utiles en standard,
+  128 en multi-trame et en étendu. `app.js` ajoute le préfixe (`sendMessage`) et le retire
+  (`splitCallsign`) ; SonoLink transporte le texte tel quel, empreinte comprise.
+- Trame 1 d'un multi-trame perdue (`…` en tête) → indicatif affiché `?`.
+- Les accusés portent l'indicatif court de la station qui accuse (11 bits) → « ✓✓ reçu par XY ».
+- **Annuaire** (paramètres → Importer) : fichier texte/CSV, `court;long` par ligne (`;` `,`
+  tabulation ou espaces, `#` commentaire, en-tête toléré, dernier doublon gagnant). Il est
+  stocké dans `localStorage` (`sonochat-directory`), et un import valide le remplace.
+- Traduction **à l'affichage seulement** (`data-call` sur chaque indicatif, `refreshCalls`) :
+  l'historique garde le code court, un annuaire importé plus tard s'applique aussi aux anciens
+  messages. Code inconnu → code court affiché.
+
+## Accusés de réception (SonoLink, `arq.js`)
+
+Case « Accusés » sur la page de chat (**décochée par défaut** ; décochée = diffusion sans accusé,
+pour plusieurs récepteurs). Les deux stations doivent la cocher : un récepteur n'accuse que si
+sa propre case est cochée. Réglages enregistrés en `v: 2` : ceux de la v1 (sans `v`) repassent
+les accusés à décoché. Un seul correspondant à la fois : plusieurs récepteurs accuseraient en même temps.
+
+| Mode | Trames | Accusé | Répétition (3 max) |
+|---|---|---|---|
+| Standard | texte libre 13 car. | `ACK texte` (CRC-16 du texte) | si pas d'accusé en 24 s |
+| Multi-trame | DATA télémétrie, 10 car./trame, ≤ 16 | `ACK trame` après chaque trame (arrêt-et-attente) ; la dernière porte `final` + CRC-16 du message | la trame seule, sur délai ou `RPT` |
+| Étendu | texte libre multi-blocs | `ACK texte` du message complet | tout le message si empreinte fausse ou absente (48 s) |
+
+Format des trames (71 bits, MSB d'abord) :
+```
+DATA      : type=0 (2) | msgId (5) | seq (4) | total-1 (4) | ackReq (1) | 10 car. base-42 (54)
+ACK trame : type=1 (2) | 0 (1) | msgId (5) | seq (4) | final (1) | CRC-16 message (16) | indicatif (11)
+ACK texte : type=1 (2) | 1 (1) | CRC-16 texte (16) | indicatif (11)
+RPT       : type=2 (2) | msgId (5) | seq (4)
+```
+- Empreinte : CRC-16/CCITT-FALSE du texte normalisé (majuscules, hors alphabet → espace, fin rognée)
+- Le récepteur n'accuse **que quand le signal s'arrête** (`frame.continues === false`) : le
+  1er bloc d'un étendu se décode seul avant le 2e, y répondre couvrirait l'émetteur. Secours :
+  accusé après 26 s sans nouveau bloc (`RX_STABLE`, > 2 blocs pour un bloc perdu au milieu).
+- `RPT` : en session multi-trame, synchro Costas forte sans décodage (`onUndecoded`) → demande
+  de répétition, une fois par trame attendue.
+- Répétition reçue (accusé perdu) : reconnue (msgId/seq, ou même texte < 180 s), pas de
+  doublon affiché, réaccusée. Un étendu reçu avec des trous est complété par sa répétition.
 
 ## Démodulation (RX)
 
-La démodulation utilise une approche en 2 passes :
-1. **Pass grossière** : recherche Costas sur grille (1 symbole temps, 3 Hz fréquence)
-2. **Pass fine** : raffinement sub-symbole (nsps/8 temps, 0.5 Hz fréquence) + interpolation parabolique
+Passe de décodage toutes les 2 s sur tout le ring buffer (~130 s) :
+1. **Puissances Goertzel** sur une grille d'un symbole, 14 bins (±3 bins autour des 8 tons)
+2. **Recherche Costas grossière**, puis sélection de **6 candidats de créneaux distincts**
+   (espacement ≥ 20 symboles : < 36, car un étendu a un Costas tous les 36 symboles et une
+   fenêtre décalée d'un demi-bloc synchronise aussi bien que la vraie)
+3. **Raffinement fin séparable** : fréquence au temps grossier, puis temps à la meilleure
+   fréquence (18 évaluations au lieu de 81), + interpolation parabolique
+4. LDPC → CRC-14 → texte libre ou télémétrie ; tentative d'étendu (blocs avant **et** arrière)
 
-Détails techniques :
+Dédoublonnage **par position absolue** (`_absWritten`, `_decodedSpans`) : un candidat dont le
+centre tombe dans une trame déjà décodée est exclu **avant** la sélection. Une vieille trame
+n'est jamais réémise ni ne bloque une nouvelle, et une trame répétée à l'identique (ARQ) est
+une nouvelle position, donc décodée.
+
+Autres points :
+- Micro coupé (zéros) pendant notre émission + 300 ms (`TX_MUTE_TAIL_MS`) : jamais d'auto-décodage
+- Mot de code tout à zéro rejeté : valide pour LDPC et CRC-14, c'est ce que donne le silence
+- Continuation (`_signalContinues`) : contraste de tons sur 4 symboles après la trame, comparé
+  au bruit (3,9 mesuré) et à la trame ; une trame texte dont la traîne n'est pas encore captée
+  est remise à la passe suivante
+- Trame perdue (`onUndecoded`) signalée seulement si le signal s'est arrêté après elle (sinon
+  c'est une fenêtre décalée sur une trame en cours de réception)
 - Fenêtre cosine-taper 5% (pas Hann) pour préserver l'orthogonalité entre tons GFSK
-- LLR par max-log MAP (robuste contre l'étalement spectral GFSK)
-- LDPC offset min-sum, 50 itérations, early termination
-- Multi-candidats : teste les 6 meilleurs candidats Costas
+- LLR par max-log MAP ; LDPC offset min-sum, 50 itérations, early termination
 - Le filtre GFSK (BT=2.0) introduit un délai de ~0.75 symbole — le Costas sync le compense
 
 ## Commandes de dev
@@ -39,12 +106,21 @@ Détails techniques :
 python3 -m http.server 8080
 
 # Vérifier la syntaxe JS
-node -c ft8-modem.js && node -c app.js
+node -c ft8-modem.js && node -c arq.js && node -c directory.js && node -c app.js
 
 # Test loopback hors navigateur (encodage → GFSK → bruit AWGN → décodage)
 # Taux de décodage par SNR (réf. 2500 Hz), 48 et 44,1 kHz — ~2 min
 node tests/loopback.js all 5
 node tests/loopback.js quick 3   # standard seul, rapide
+
+# Protocole SonoLink : 2 stations, canal simulé, horloge virtuelle, pertes forcées — ~1 s
+node tests/arq.js
+
+# Import d'annuaire
+node tests/directory.js
+
+# Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
+node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
 ```
 
 

@@ -6,6 +6,8 @@ const ASSETS = [
   './index.html',
   './style.css',
   './ft8-modem.js',
+  './arq.js',
+  './directory.js',
   './app.js',
   './icon.svg',
   './icon-192.png',

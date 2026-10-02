@@ -144,6 +144,16 @@
 
   // Reception : une bulle par message SonoLink, mise a jour au fil des trames
   function onLinkRx(ev) {
+    if (ev.superseded) {
+      // Fragment (debut perdu) remplace par le message complet recu ensuite
+      const old = _rxBubbles.get(ev.id);
+      if (old) {
+        old.el.remove();
+        if (old.msg) { history = history.filter((m) => m !== old.msg); saveHistory(); }
+        _rxBubbles.delete(ev.id);
+      }
+      return;
+    }
     const { call, to, body } = splitHeader(ev.text);
     // En-tete d'un 9-line pour nous (premier bloc, avant la fin du message) : alerte
     if (body.startsWith('/9') && to === myCallsign()) enterMedevacAlert(call);
@@ -319,7 +329,10 @@
 
   function splitHeader(text) {
     if (text.startsWith(LINK.MISSING)) return { call: '?', to: '?', body: text }; // trame 1 perdue
-    return { call: text.substring(0, 2).trim() || '?', to: text.substring(2, 4).trim() || '?', body: text.substring(4) };
+    const call = text.substring(0, 2), to = text.substring(2, 4);
+    // En-tete invalide : debut du message perdu (fragment d'etendu), on n'invente rien
+    if (!CALL_RE.test(call) || !CALL_RE.test(to)) return { call: '?', to: '?', body: LINK.MISSING + text };
+    return { call, to, body: text.substring(4) };
   }
 
   function isForMe(text) {

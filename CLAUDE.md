@@ -52,7 +52,8 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   premier envoi ouvre le sélecteur.
 - Bulles : `FM PC TO XY` ; « TO moi » ; `99` → « Message en l'air · pour tous » ; message pour une
   autre station → « pour XY · pas de réponse » (reçu et affiché, atténué, jamais de réponse).
-- Trame 1 d'un multi-trame perdue (`…` en tête) → émetteur et destinataire `?`.
+- Trame 1 d'un multi-trame perdue (`…` en tête), ou en-tête invalide (bloc 0 d'un étendu perdu :
+  la suite commence au milieu du texte) → émetteur et destinataire `?`, texte précédé de `…`.
 - Les accusés portent l'indicatif court de la station qui accuse (11 bits) → « ✓✓ reçu par XY ».
 - **Annuaire** (paramètres → Importer) : fichier texte/CSV, `court;long` par ligne (`;` `,`
   tabulation ou espaces, `#` commentaire, en-tête toléré, dernier doublon gagnant). Il est
@@ -71,6 +72,12 @@ envoyé. Plus de case « Accusés ».
 - Émission : `link.send(text, mode, { ack, from })`, `ack = destinataire ≠ 99`, `from` =
   destinataire : un accusé (texte ou trame) d'une autre station est ignoré.
 - Plusieurs stations peuvent écouter : seul le destinataire répond (testé à 3 stations).
+- Bloc 0 d'un étendu perdu : la suite passe d'abord pour un message ; quand la répétition
+  complète arrive, `_absorbFragments` retire le fragment (`onRx {id, superseded}` → l'appli
+  supprime sa bulle et l'entrée d'historique).
+- Multi-trame incomplet (trame perdue sans répétition : en l'air, ou message pour une autre
+  station) : sans nouvelle trame pendant `RX_RPT_WINDOW`, la réception se termine « incomplet »
+  au lieu de rester « en cours ».
 
 | Mode | Trames | Accusé | Répétition (3 max) |
 |---|---|---|---|
@@ -189,6 +196,11 @@ node tests/ptt-timing.js
 
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
 node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
+
+# 3 stations ChatMTX complètes (Chromium headless), air simulé avec pertes, temps ×10 — ~6 min
+# 23 scénarios : adressage, en l'air, répétitions, RPT, 9-line/MIST, collationnement, alerte
+# Prérequis hors dépôt : npm i -g playwright-core && npx playwright install chromium
+node tests/stations.js
 ```
 
 

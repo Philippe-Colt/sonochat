@@ -182,7 +182,7 @@ class SonoLink {
     this.log = io.log || (() => {});
 
     this.onTx = null;   // ({id, state, ...})
-    this.onRx = null;   // ({id, text, done, complete, frames?, total?, ackSent?})
+    this.onRx = null;   // ({id, text, done, complete, frames?, total?, ackSent?} | {id, superseded: autreId})
 
     this._txChain = Promise.resolve();
     this._sending = false;
@@ -430,6 +430,17 @@ class SonoLink {
     if (isNew || willAck) {
       this._emitRx({ id: s.rxId, text, done: complete, complete, frames: received, total: s.total, ackSent: willAck });
     }
+    // Plus aucune trame (perdue, message pour une autre station, en l'air) : la
+    // réception se termine incomplète au lieu de rester « en cours » ; une
+    // répétition qui comble les trous la complète encore.
+    this.clearTimer(s.timer);
+    if (!complete) {
+      s.timer = this.setTimer(() => {
+        if (s.done) return;
+        const got = Array.from(s.chunks).filter((c) => c !== undefined).length;
+        this._emitRx({ id: s.rxId, text: this._assembleChunks(s.chunks), done: true, complete: false, frames: got, total: s.total });
+      }, LINK.RX_RPT_WINDOW * 1000);
+    }
     if (willAck) {
       s.lastAckAt = now;
       this.log('TX ACK ' + d.msgId + '/' + d.seq + (complete ? ' final' : ''));
@@ -507,6 +518,7 @@ class SonoLink {
     entry.complete = entry.blocks.length > 0 && !Array.from(entry.blocks).includes(undefined);
     entry.time = now;
     entry.done = false;
+    this._absorbFragments(entry);
 
     if (changed) this._emitRx({ id: entry.rxId, text, done: false, complete: false });
 
@@ -517,6 +529,25 @@ class SonoLink {
       // L'émission semble continuer : on attend la suite, sans laisser le
       // correspondant sans réponse si le signal s'est en fait arrêté.
       entry.timer = this.setTimer(() => this._finishText(entry), LINK.RX_STABLE * 1000);
+    }
+  }
+
+  /**
+   * Bloc 0 d'un étendu perdu : la suite arrive seule et passe pour un message
+   * entier. Quand la répétition complète arrive, ce fragment fait double emploi :
+   * on le retire (l'application supprime sa bulle).
+   */
+  _absorbFragments(entry) {
+    if (!entry.complete) return;
+    for (const e of this._rxTexts.slice()) {
+      if (e === entry || e.blocks.length >= entry.blocks.length) continue;
+      const o = this._matchBlocks(entry.blocks, e.blocks);
+      if (o === null || o < 0 || o + e.blocks.length > entry.blocks.length) continue;
+      if (Array.from(e.blocks).some((b, j) => b === undefined || entry.blocks[o + j] !== b)) continue;
+      this.clearTimer(e.timer);
+      this._rxTexts.splice(this._rxTexts.indexOf(e), 1);
+      this.log('RX fragment ' + e.rxId + ' remplacé par ' + entry.rxId);
+      this._emitRx({ id: e.rxId, superseded: entry.rxId });
     }
   }
 

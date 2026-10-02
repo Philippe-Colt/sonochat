@@ -363,6 +363,27 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     check('BB n\'envoie ni accusé ni RPT', B.sent.length === 0, B.sent.length + ' émission(s)');
   }
 
+  console.log('Pertes en début de message');
+  {
+    // Bloc 0 perdu à la 1re émission : la suite passe pour un message ; la répétition le remplace
+    const { sim, A, B } = pair();
+    let n = 0;
+    A.drop = (d) => d.kind === 'ext' && d.block === 0 && n++ === 0;
+    const r = await exchange(sim, A, 'XX' + EXT, 'extended');
+    const sup = B.rxEvents.filter((e) => e.superseded);
+    check('étendu, bloc 0 perdu : confirmé à la répétition', r.status === 'confirmed', JSON.stringify(r));
+    check('le fragment est remplacé (une seule bulle)', sup.length === 1 && doneMsgs(B).length === 1 && doneMsgs(B)[0].text === 'XX' + EXT,
+      sup.length + ' remplacement(s) ; ' + doneMsgs(B).map((m) => m.text).join(' | '));
+  }
+  {
+    // Multi-trame en l'air, trame 0 perdue : la réception se termine « incomplète »
+    const { sim, A, B } = pair();
+    A.drop = (d) => d.type === 'data' && d.seq === 0;
+    const r = await exchange(sim, A, LONG, 'multi-frame', false);
+    const last = [...B.rx.values()].pop();
+    check('multi-trame en l\'air incomplet : réception terminée', r.status === 'sent' && last.done === true && last.complete === false, JSON.stringify(last));
+  }
+
   console.log('Enchaînement');
   {
     const { sim, A, B } = pair();

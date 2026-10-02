@@ -1,5 +1,5 @@
 /**
- * Annuaire SonoChat : indicatif court (2 caractères, celui qui circule sur
+ * Annuaire ChatMTX : indicatif court (2 caractères, celui qui circule sur
  * l'air) -> indicatif long (affiché). Fonctions pures, testables en Node.
  *
  * Fichier importé : une entrée par ligne, « court long », séparés par ; , une

@@ -1,4 +1,8 @@
-# SonoChat
+# ChatMTX — Messagerie Texte Xtrême
+
+(ex-SonoChat ; dépôt `sono-chat`, identifiant Android `com.f4mtx.sonochat` et clés
+`localStorage` `sonochat-*` volontairement inchangés : les changer casserait les mises à jour
+et effacerait historique, réglages et annuaire.)
 
 Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 
@@ -131,14 +135,19 @@ node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
 ```
 
 
-## Déploiement — https://sonochat.f4mtx.com
+## Déploiement — https://chatmtx.f4mtx.com
 
 ```bash
-./deploy.sh   # vérifie la syntaxe, copie vers /srv/sonochat (sudo)
+./deploy.sh   # vérifie la syntaxe, copie vers /srv/chatmtx (+ legacy/ vers /srv/sonochat) (sudo)
 ```
 
 - Chaîne : Cloudflare Tunnel (`*.f4mtx.com` → localhost:80) → Caddy (`/etc/caddy/Caddyfile`,
-  bloc `http://sonochat.f4mtx.com`, `file_server` sur `/srv/sonochat`). Pas de container.
+  bloc `http://chatmtx.f4mtx.com`, `file_server` sur `/srv/chatmtx`). Pas de container.
+- **Ancienne adresse** `sonochat.f4mtx.com` (bloc Caddy dédié) : `/` et `/index.html` servent
+  `legacy/index.html`, qui passe historique/réglages/annuaire dans `#migrate=` (base64) vers
+  chatmtx (`importMigration` dans `app.js`, n'écrase jamais) ; `/sw.js` sert `legacy/sw.js`, qui
+  remplace l'ancien SW, se désinstalle et recharge les pages ; `/apk-version.json` et
+  `/sonochat.apk` servent ceux de `/srv/chatmtx` (applications 1.1.x) ; le reste redirige (301).
 - `deploy.sh` remplace `CACHE_NAME` de `sw.js` par une empreinte des fichiers servis :
   pas de bump manuel. Tout nouveau fichier servi doit être ajouté à `FILES` (deploy.sh)
   **et** à `ASSETS` (sw.js), sinon il manquera hors ligne.
@@ -158,8 +167,8 @@ par un plugin natif.
 
 ```bash
 cd mobile && npm install           # une fois
-scripts/build-apk.sh               # www/ <- web-files.txt, cap sync, assembleRelease -> ../dist/sonochat.apk
-cd .. && ./deploy.sh               # publie aussi dist/sonochat.apk -> https://sonochat.f4mtx.com/sonochat.apk
+scripts/build-apk.sh               # www/ <- web-files.txt, cap sync, assembleRelease -> ../dist/chatmtx.apk
+cd .. && ./deploy.sh               # publie aussi dist/chatmtx.apk -> https://chatmtx.f4mtx.com/chatmtx.apk
 ```
 
 - **Avant chaque publication**, incrémenter `version` dans `mobile/package.json` (le
@@ -178,7 +187,7 @@ cd .. && ./deploy.sh               # publie aussi dist/sonochat.apk -> https://s
 - Le JS ne change pas de chemin : `NativePttPort.setSignals({requestToSend, dataTerminalReady})`
   est appelé par `FT8Modem._pttOn/_pttOff` comme un port Web Serial. En natif, pas de service
   worker (fichiers dans l'APK) et l'aide micro renvoie aux autorisations Android.
-- Branchement d'une interface CP210x / FTDI / CH34x / PL2303 : Android propose d'ouvrir SonoChat
+- Branchement d'une interface CP210x / FTDI / CH34x / PL2303 : Android propose d'ouvrir ChatMTX
   (`res/xml/usb_device_filter.xml`).
 - **Signature** : clé `~/.android-keys/sonochat-release.jks`, mots de passe dans
   `mobile/android/keystore.properties` (gitignoré ; copie dans `~/.android-keys/`).
@@ -195,7 +204,7 @@ cd .. && ./deploy.sh               # publie aussi dist/sonochat.apk -> https://s
   Chrome Android et sur iOS.
 - iOS : pas d'accès au série USB pour une application ordinaire ; non prévu.
 - Test sur émulateur : AVD `sonochat-test` (Android 36, `-gpu swiftshader_indirect` pour ne pas
-  solliciter le GPU i915), `adb install -r dist/sonochat.apk`.
+  solliciter le GPU i915), `adb install -r dist/chatmtx.apk`.
 
 ## Notes
 

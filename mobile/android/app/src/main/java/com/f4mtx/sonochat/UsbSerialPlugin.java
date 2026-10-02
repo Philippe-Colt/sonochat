@@ -29,7 +29,7 @@ import com.hoho.android.usbserial.driver.UsbSerialProber;
 import java.util.List;
 
 /**
- * Port série USB pour le PTT de SonoChat (côté JS : native-serial.js).
+ * Port série USB pour le PTT de ChatMTX (côté JS : native-serial.js).
  *
  * Chrome Android ne gère pas le série USB filaire (Web Serial n'y fonctionne
  * qu'en Bluetooth) : ce plugin actionne RTS/DTR d'une interface USB-série

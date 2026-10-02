@@ -1,8 +1,8 @@
 {
   "name": "sonochat-mobile",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
-  "description": "SonoChat en application Android (Capacitor) : PTT par port serie USB natif",
+  "description": "ChatMTX en application Android (Capacitor) : PTT par port serie USB natif",
   "scripts": {
     "bundle": "node scripts/bundle-web.mjs",
     "sync": "npm run bundle && cap sync android",

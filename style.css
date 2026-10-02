@@ -73,6 +73,17 @@ header h1 {
   letter-spacing: 0.5px;
 }
 
+header h1 .h1-sub {
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 420px) {
+  header h1 .h1-sub { display: none; }
+}
+
 .status {
   display: flex;
   align-items: center;

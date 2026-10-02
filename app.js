@@ -1,5 +1,5 @@
 /**
- * SonoChat - Application principale
+ * ChatMTX (Messagerie Texte Xtreme) - Application principale
  * Interface chat pour communication FT8 par modulation sonore
  */
 (function () {
@@ -61,7 +61,30 @@
   let directory = {};           // annuaire : indicatif court -> indicatif long
 
   // === Init ===
+  // Arrivee depuis l'ancienne adresse sonochat.f4mtx.com (legacy/index.html) :
+  // historique, reglages et annuaire passes dans l'ancre de l'URL. On ne remplace
+  // jamais une donnee deja presente ici.
+  function importMigration() {
+    if (!location.hash.startsWith('#migrate=')) return;
+    try {
+      const b64 = decodeURIComponent(location.hash.slice('#migrate='.length));
+      const data = JSON.parse(decodeURIComponent(escape(atob(b64))));
+      const KEYS = ['sonochat-settings', 'sonochat-directory', 'sonochat-history'];
+      for (const k of KEYS) {
+        if (typeof data[k] === 'string' && localStorage.getItem(k) === null) {
+          JSON.parse(data[k]); // valide avant d'ecrire
+          localStorage.setItem(k, data[k]);
+        }
+      }
+      console.log('[MIGRATION] donnees de sonochat.f4mtx.com importees');
+    } catch (e) {
+      console.warn('[MIGRATION] import impossible : ' + e.message);
+    }
+    window.history.replaceState(null, '', location.pathname + location.search); // `history` est l'historique des messages
+  }
+
   function init() {
+    importMigration();
     loadDirectory();
     loadHistory();
     renderHistory();
@@ -329,11 +352,11 @@
     if (isNative) {
       apkLink.removeAttribute('download'); // la WebView ne telecharge pas : on laisse Capacitor ouvrir le navigateur
       document.getElementById('apk-link-label').textContent = 'Mettre a jour l\'application (APK)';
-      document.getElementById('apk-link-info').textContent = 'Telecharge la derniere version depuis sonochat.f4mtx.com, a installer par-dessus.';
+      document.getElementById('apk-link-info').textContent = 'Telecharge la derniere version depuis chatmtx.f4mtx.com, a installer par-dessus.';
     }
     apkLink.addEventListener('click', () => {
       // Parametre unique : jamais une ancienne copie en cache (navigateur, Cloudflare)
-      apkLink.href = 'https://sonochat.f4mtx.com/sonochat.apk?t=' + Date.now();
+      apkLink.href = APK_URL + '?t=' + Date.now();
     });
     if (isNative || 'serial' in navigator) {
       btnSerialConnect.addEventListener('click', connectSerial);
@@ -540,8 +563,8 @@
     if (history.length === 0) {
       messagesEl.innerHTML = `
         <div class="system-msg">
-          <p>Bienvenue sur <strong>SonoChat</strong></p>
-          <p class="sub">Communication texte par modulation sonore FT8</p>
+          <p>Bienvenue sur <strong>ChatMTX</strong></p>
+          <p class="sub">Messagerie Texte Xtreme par modulation sonore FT8</p>
           <p class="sub">8-GFSK | LDPC(174,91) | 79 symboles | 12.64 s</p>
           <p class="sub">Activez le micro pour recevoir, tapez un message pour envoyer.</p>
         </div>
@@ -605,8 +628,8 @@
 
     if (isNative) {
       return [
-        'Ouvrez les <b>Parametres</b> Android &rarr; <b>Applications</b> &rarr; <b>SonoChat</b> &rarr; <b>Autorisations</b> &rarr; <b>Micro</b> &rarr; <b>Autoriser seulement si l\'appli est en cours d\'utilisation</b>.',
-        'Revenez dans SonoChat : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
+        'Ouvrez les <b>Parametres</b> Android &rarr; <b>Applications</b> &rarr; <b>ChatMTX</b> &rarr; <b>Autorisations</b> &rarr; <b>Micro</b> &rarr; <b>Autoriser seulement si l\'appli est en cours d\'utilisation</b>.',
+        'Revenez dans ChatMTX : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
       ];
     }
     if (android) {
@@ -618,7 +641,7 @@
       }
       steps.push(`Verifiez aussi Android : <b>Parametres</b> &rarr; <b>Applications</b> &rarr; <b>${brave ? 'Brave' : 'votre navigateur'}</b> &rarr; <b>Autorisations</b> &rarr; <b>Micro</b> &rarr; <b>Autoriser seulement si l'appli est en cours d'utilisation</b>.`);
       steps.push(installed
-        ? 'Revenez dans SonoChat : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
+        ? 'Revenez dans ChatMTX : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
         : 'Revenez sur cette page : l\'ecoute reprend toute seule, sinon rechargez-la.');
       return steps;
     }
@@ -632,7 +655,7 @@
     const name = err && err.name;
     let title, steps;
     if (name === 'NotAllowedError' || name === 'SecurityError') {
-      title = 'Le microphone est bloque pour SonoChat';
+      title = 'Le microphone est bloque pour ChatMTX';
       steps = micHelpSteps();
     } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
       title = 'Aucun microphone detecte';
@@ -1026,8 +1049,8 @@
   // a celle publiee par deploy.sh (apk-version.json, CORS ouvert par Caddy).
   // Plus recente en ligne : ecran bloquant jusqu'a l'installation. Hors ligne
   // ou serveur muet : on laisse passer.
-  const APK_URL = 'https://sonochat.f4mtx.com/sonochat.apk';
-  const APK_VERSION_URL = 'https://sonochat.f4mtx.com/apk-version.json';
+  const APK_URL = 'https://chatmtx.f4mtx.com/chatmtx.apk';
+  const APK_VERSION_URL = 'https://chatmtx.f4mtx.com/apk-version.json';
   const APK_CHECK_INTERVAL_MS = 3600 * 1000;
   let apkCheckedAt = 0;
 
@@ -1098,7 +1121,7 @@
     el.innerHTML = `
       <div class="update-gate-box">
         <p class="update-gate-title" id="update-gate-title">Mise a jour obligatoire</p>
-        <p>Une nouvelle version de SonoChat est disponible : <b>${escapeHtml(remote)}</b> (installee : ${escapeHtml(local)}).</p>
+        <p>Une nouvelle version de ChatMTX est disponible : <b>${escapeHtml(remote)}</b> (installee : ${escapeHtml(local)}).</p>
         <p>Telechargez-la puis installez-la par-dessus l'application actuelle. Vos messages et reglages sont conserves.</p>
         <a class="update-gate-btn" href="${APK_URL}">Telecharger la mise a jour</a>
       </div>

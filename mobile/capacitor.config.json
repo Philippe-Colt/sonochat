@@ -1,6 +1,6 @@
 {
   "appId": "com.f4mtx.sonochat",
-  "appName": "SonoChat",
+  "appName": "ChatMTX",
   "webDir": "www",
   "android": {
     "backgroundColor": "#1a1a2e"

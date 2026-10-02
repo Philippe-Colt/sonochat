@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChatMTX</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+         background: #1a1a2e; color: #eee; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  a { color: #e94560; }
+</style>
+</head>
+<body>
+<p>SonoChat devient <b>ChatMTX</b>. Redirection vers <a id="go" href="https://chatmtx.f4mtx.com/">chatmtx.f4mtx.com</a>...</p>
+<script>
+// L'historique, les réglages et l'annuaire sont dans le localStorage de cette
+// ancienne adresse, invisible depuis la nouvelle : on les passe dans l'ancre de
+// l'URL (jamais envoyée au serveur). ChatMTX les importe au chargement.
+(function () {
+  var target = 'https://chatmtx.f4mtx.com/';
+  try {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        regs.forEach(function (r) { r.unregister(); });
+      });
+    }
+    var data = {};
+    ['sonochat-settings', 'sonochat-directory', 'sonochat-history'].forEach(function (k) {
+      var v = localStorage.getItem(k);
+      if (v !== null) data[k] = v;
+    });
+    if (Object.keys(data).length) {
+      var json = JSON.stringify(data);
+      var b64 = btoa(unescape(encodeURIComponent(json)));
+      target += '#migrate=' + encodeURIComponent(b64);
+    }
+  } catch (e) { /* stockage inaccessible : redirection simple */ }
+  document.getElementById('go').href = target;
+  location.replace(target);
+})();
+</script>
+</body>
+</html>

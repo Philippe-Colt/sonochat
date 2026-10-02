@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "SonoChat - Communication Sonore",
-  "short_name": "SonoChat",
-  "description": "Communication texte par modulation sonore FT8",
+  "name": "ChatMTX - Messagerie Texte Xtrême",
+  "short_name": "ChatMTX",
+  "description": "Messagerie Texte Xtrême par modulation sonore FT8",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

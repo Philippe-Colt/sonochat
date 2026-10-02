@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">SonoChat</string>
-    <string name="title_activity_main">SonoChat</string>
+    <string name="app_name">ChatMTX</string>
+    <string name="title_activity_main">ChatMTX</string>
     <string name="package_name">com.f4mtx.sonochat</string>
     <string name="custom_url_scheme">com.f4mtx.sonochat</string>
 </resources>

@@ -22,7 +22,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Branchement d'une interface USB-série (Digirig...) : propose SonoChat -->
+            <!-- Branchement d'une interface USB-série (Digirig...) : propose ChatMTX -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>

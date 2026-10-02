@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Construit l'APK signé de SonoChat : fichiers du site -> www/ -> projet Android
-# -> assembleRelease -> ../dist/sonochat.apk (publié ensuite par ../deploy.sh).
+# Construit l'APK signé de ChatMTX : fichiers du site -> www/ -> projet Android
+# -> assembleRelease -> ../dist/chatmtx.apk (publié ensuite par ../deploy.sh).
 # Avant une publication : incrémenter "version" dans mobile/package.json.
 set -euo pipefail
 
@@ -22,8 +22,8 @@ APK=android/app/build/outputs/apk/release/app-release.apk
 BT=$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)
 "$BT/apksigner" verify "$APK"
 mkdir -p "$ROOT/dist"
-cp "$APK" "$ROOT/dist/sonochat.apk"
+cp "$APK" "$ROOT/dist/chatmtx.apk"
 # Version publiee avec l'APK (deploy.sh) : les applications plus anciennes
 # affichent l'ecran de mise a jour obligatoire
 node -p "JSON.stringify({ version: require('./package.json').version })" > "$ROOT/dist/apk-version.json"
-echo "APK : dist/sonochat.apk ($(du -h "$ROOT/dist/sonochat.apk" | cut -f1)), version $(node -p "require('./package.json').version")"
+echo "APK : dist/chatmtx.apk ($(du -h "$ROOT/dist/chatmtx.apk" | cut -f1)), version $(node -p "require('./package.json').version")"

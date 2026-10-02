@@ -143,7 +143,8 @@ node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
   pas de bump manuel. Tout nouveau fichier servi doit être ajouté à `FILES` (deploy.sh)
   **et** à `ASSETS` (sw.js), sinon il manquera hors ligne.
 - Hors ligne : le SW précache tout à l'installation (`cache: 'reload'`), sert l'app shell
-  pour toute navigation (même avec `?query`). À la mise à jour, la page se recharge d'elle-même
+  pour toute navigation (même avec `?query`), **sauf** `.apk` et `.json` (hors manifest) : sinon
+  le lien de mise à jour ouvert dans Chrome affichait SonoChat au lieu de télécharger l'APK. À la mise à jour, la page se recharge d'elle-même
   sauf en émission/écoute.
 - Cloudflare réécrit `Cache-Control` en `max-age=14400` sur .js/.png (réglage de zone
   « Browser Cache TTL ») ; sans effet sur les mises à jour, le SW contournant le cache HTTP.

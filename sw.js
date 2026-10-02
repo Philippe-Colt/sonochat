@@ -40,6 +40,12 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
 
+  // Fichier ouvert directement (sonochat.apk, apk-version.json) : toujours le
+  // réseau. Sinon la navigation vers l'APK recevrait l'app shell, et le
+  // navigateur afficherait SonoChat au lieu de télécharger la mise à jour.
+  const path = new URL(req.url).pathname;
+  if (/\.(apk|json)$/i.test(path) && !path.endsWith('manifest.json')) return;
+
   // Navigation (y compris avec paramètres d'URL) : l'app shell, même hors ligne.
   if (req.mode === 'navigate') {
     event.respondWith(

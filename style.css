@@ -845,6 +845,19 @@ header h1 {
   margin-bottom: 8px;
 }
 
+.apk-versions {
+  font-variant-numeric: tabular-nums;
+}
+
+.apk-versions.up-to-date {
+  color: var(--success);
+}
+
+.apk-versions.outdated {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .app-download .app-link:active {
   background: var(--accent-dim);
 }

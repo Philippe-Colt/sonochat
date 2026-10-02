@@ -46,6 +46,7 @@
   const btnDirectoryClear = document.getElementById('btn-directory-clear');
   const directoryFile = document.getElementById('directory-file');
   const directoryStatus = document.getElementById('directory-status');
+  const apkVersionsEl = document.getElementById('apk-versions');
 
   // Application Android (Capacitor) : PTT par port serie USB natif, fichiers dans l'APK
   const usbSerial = nativeUsbSerial();
@@ -297,6 +298,7 @@
     // Settings
     btnSettings.addEventListener('click', () => {
       settingsPanel.classList.remove('hidden');
+      updateApkVersionInfo();
     });
     btnCloseSettings.addEventListener('click', () => {
       settingsPanel.classList.add('hidden');
@@ -1038,24 +1040,52 @@
     return 0;
   }
 
+  // Versions de l'APK : embarquee (application seulement) et publiee sur le serveur.
+  // null = inconnue (navigateur, hors ligne, serveur muet).
+  async function fetchApkVersions() {
+    const read = async (url, opts) => {
+      try {
+        const res = await fetch(url, opts);
+        return res.ok ? (await res.json()).version || null : null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const local = isNative ? await read('app-version.json') : null;
+    const remote = await read(APK_VERSION_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    return { local, remote };
+  }
+
+  // Ligne de version dans les parametres (rafraichie a chaque ouverture)
+  async function updateApkVersionInfo() {
+    apkVersionsEl.className = 'setting-info apk-versions';
+    apkVersionsEl.textContent = 'Verification de la version...';
+    const { local, remote } = await fetchApkVersions();
+    const server = 'serveur : ' + (remote || 'injoignable');
+    if (!isNative) {
+      apkVersionsEl.textContent = 'Version de l\'application sur le ' + server;
+      return;
+    }
+    let state = '';
+    if (local && remote) {
+      const up = compareVersions(remote, local) <= 0;
+      state = up ? ' \u2014 a jour' : ' \u2014 mise a jour disponible';
+      apkVersionsEl.classList.add(up ? 'up-to-date' : 'outdated');
+    }
+    apkVersionsEl.textContent = 'Installee : ' + (local || '?') + ' \u00b7 ' + server + state;
+  }
+
   async function checkApkUpdate() {
     if (!isNative || document.getElementById('update-gate')) return;
     apkCheckedAt = Date.now();
-    try {
-      const local = (await (await fetch('app-version.json')).json()).version;
-      const res = await fetch(APK_VERSION_URL + '?t=' + Date.now(), { cache: 'no-store' });
-      if (!res.ok) return;
-      const remote = (await res.json()).version;
-      if (!local || !remote || compareVersions(remote, local) <= 0) return;
-      // Pas en pleine emission ou reception : on reessaie un peu plus tard
-      if (modem && (modem.transmitting || (link && link.busy))) {
-        setTimeout(checkApkUpdate, 30000);
-        return;
-      }
-      showUpdateGate(local, remote);
-    } catch (e) {
-      console.log('[MAJ] verification impossible : ' + e.message);
+    const { local, remote } = await fetchApkVersions();
+    if (!local || !remote || compareVersions(remote, local) <= 0) return;
+    // Pas en pleine emission ou reception : on reessaie un peu plus tard
+    if (modem && (modem.transmitting || (link && link.busy))) {
+      setTimeout(checkApkUpdate, 30000);
+      return;
     }
+    showUpdateGate(local, remote);
   }
 
   function showUpdateGate(local, remote) {

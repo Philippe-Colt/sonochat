@@ -44,6 +44,8 @@
   const stationPosInfo = document.getElementById('station-pos-info');
   const settingContactFreq = document.getElementById('setting-contact-freq');
   const btnMedevac = document.getElementById('btn-medevac');
+  const medevacAlertEl = document.getElementById('medevac-alert');
+  const medevacAlertInfo = document.getElementById('medevac-alert-info');
   const settingAck = document.getElementById('setting-ack');
   const settingCallsign = document.getElementById('setting-callsign');
   const myCallEl = document.getElementById('my-call');
@@ -96,6 +98,7 @@
     renderHistory();
     initModem();
     initUI();
+    restoreMedevacAlert();
     registerServiceWorker();
     checkApkUpdate();
     resizeCanvas();
@@ -142,6 +145,8 @@
   // Reception : une bulle par message SonoLink, mise a jour au fil des trames
   function onLinkRx(ev) {
     const { call, body } = splitCallsign(ev.text);
+    // En-tete d'un 9-line (premier bloc, avant la fin du message) : alerte
+    if (body.startsWith('/9')) enterMedevacAlert(call);
     let b = _rxBubbles.get(ev.id);
     if (!b) {
       const el = addMessage(body, 'received', false, 0, call);
@@ -188,6 +193,55 @@
   const READBACK_DELAY_MS = 2000;      // apres notre accuse, avant la relecture
   const READBACK_WINDOW_MS = 15 * 60 * 1000;
   const _readbackDone = new Map();     // corps -> heure : une relecture par message
+
+  // Alerte 9-line : des l'en-tete recue, fond rouge, mode etendu et accuses
+  // coches (la station va devoir repondre). « Fin d'alerte » remet le mode
+  // et les accuses d'avant. L'alerte survit a un rechargement.
+  const ALERT_KEY = 'chatmtx-medevac-alert';
+  let medevacAlert = null;   // {by, time, prevMode, prevAck}
+
+  function enterMedevacAlert(call) {
+    if (medevacAlert) {
+      if (call && call !== medevacAlert.by) { medevacAlert.by = call; showMedevacAlert(); }
+      return;
+    }
+    medevacAlert = { by: call || '', time: timeNow(), prevMode: settingTxMode.value, prevAck: settingAck.checked };
+    setTxModeAndAck('extended', true);
+    showMedevacAlert();
+    if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
+  }
+
+  function endMedevacAlert() {
+    if (!medevacAlert) return;
+    const { prevMode, prevAck } = medevacAlert;
+    medevacAlert = null;
+    try { localStorage.removeItem(ALERT_KEY); } catch (e) { /* stockage indisponible */ }
+    setTxModeAndAck(prevMode, prevAck);
+    document.body.classList.remove('alert-9line');
+    medevacAlertEl.classList.add('hidden');
+  }
+
+  function showMedevacAlert() {
+    try { localStorage.setItem(ALERT_KEY, JSON.stringify(medevacAlert)); } catch (e) { /* idem */ }
+    document.body.classList.add('alert-9line');
+    medevacAlertEl.classList.remove('hidden');
+    const by = medevacAlert.by ? displayCall(medevacAlert.by) : '?';
+    medevacAlertInfo.textContent = `de ${by} a ${medevacAlert.time.slice(0, 5)} · mode etendu et accuses actives`;
+  }
+
+  function restoreMedevacAlert() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(ALERT_KEY) || 'null');
+      if (saved) { medevacAlert = saved; showMedevacAlert(); }
+    } catch (e) { /* alerte illisible : ignoree */ }
+  }
+
+  /** Change le mode et la case Accuses comme si l'utilisateur l'avait fait (enregistrement, compteur). */
+  function setTxModeAndAck(mode, ack) {
+    settingTxMode.value = mode;
+    settingAck.checked = ack;
+    settingTxMode.dispatchEvent(new Event('change'));
+  }
 
   /** 9-line ou MIST (pas une relecture) : accuse force. */
   function isFormattedOnAir(text) {
@@ -329,6 +383,7 @@
   function initUI() {
     // Send & Cancel
     btnSend.addEventListener('click', sendMessage);
+    document.getElementById('btn-alert-end').addEventListener('click', endMedevacAlert);
     btnMedevac.addEventListener('click', () => {
       if (link.busy) return;
       MedevacUI.openChooser();

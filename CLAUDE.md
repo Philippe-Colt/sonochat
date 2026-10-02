@@ -105,6 +105,10 @@ puis remarque libre facultative (≤ 128 car. au total)
   un message `/9` ou `/M` même case « Accusés » décochée. Puis le récepteur **renvoie** le message
   avec `?` (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur
   compare (`checkReadback`) → « Relu conforme par XY » ou les lignes qui diffèrent (`msg.readback`).
+- **Alerte** : dès qu'un message reçu commence par `/9` (premier bloc, avant la fin), la station
+  passe en alerte (`enterMedevacAlert`) : fond rouge (`body.alert-9line`), bandeau, vibration,
+  mode **étendu** et case **Accusés** cochée (enregistrés). « Fin d'alerte » remet le mode et les
+  accusés d'avant. Survit au rechargement (`localStorage` `chatmtx-medevac-alert`).
 - Message abîmé (bloc perdu) ou non décodable → affiché en texte simple.
 - Plein écran (noir, écran maintenu allumé), Partager (plugin `@capacitor/share` dans l'appli,
   Web Share sinon, presse-papiers en dernier recours), QR code du texte en clair, Imprimer

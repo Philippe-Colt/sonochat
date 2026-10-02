@@ -1160,3 +1160,56 @@ header h1 .h1-sub {
   body.mv-printing .mv-n, body.mv-printing .mv-line-head { color: #000; }
   body.mv-printing .mv-viewer .mv-t small { color: #444; }
 }
+
+/* Alerte 9-line : des l'en-tete recue (app.js, enterMedevacAlert) */
+body.alert-9line {
+  --bg-primary: #3a0810;
+  --bg-secondary: #560c18;
+  --bg-tertiary: #761222;
+  --input-bg: #4a0a15;
+  --msg-recv-bg: #5e1220;
+  --msg-sent-bg: #761222;
+  --border: #8c2232;
+  --accent: #ffcf5a;
+  --accent-dim: #e0b040;
+  background: var(--bg-primary);
+}
+
+body.alert-9line .medevac-btn { color: #3a0810; }
+
+.medevac-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #d10f2b;
+  color: #fff;
+  flex-shrink: 0;
+  animation: medevac-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.medevac-alert.hidden { display: none; }
+.medevac-alert-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.medevac-alert-text b { font-size: 1.1rem; letter-spacing: 1px; }
+.medevac-alert-text span { font-size: 0.85rem; }
+
+.medevac-alert button {
+  flex: none;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 2px solid #fff;
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@keyframes medevac-pulse {
+  from { background: #d10f2b; }
+  to { background: #8e0a1d; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .medevac-alert { animation: none; }
+}

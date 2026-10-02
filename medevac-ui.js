@@ -65,7 +65,7 @@
     showOverlay();
     renderFrame({
       title: 'Message formaté',
-      sub: 'Envoyé en une fois, avec accusé de réception et relecture',
+      sub: 'Envoyé en une fois, avec accusé de réception et collationnement',
       body: `<div class="mv-grid mv-grid-1">
         <button type="button" class="mv-big mv-red" data-act="nine"><b>9-LINE</b><span>Demande d'évacuation sanitaire</span></button>
         <button type="button" class="mv-big" data-act="mist"><b>MIST</b><span>Fiche blessé seule</span></button>
@@ -409,7 +409,7 @@
           <label class="mv-remark">Remarque (facultative, ${room} car. restants)
             <input type="text" id="mv-remark" maxlength="${Math.max(0, room + st.remark.length)}" value="${esc(st.remark)}" autocapitalize="characters" placeholder="LZ AU NORD DU PONT">
           </label>
-          <p class="mv-hint">${onAir} caractères · ${blocks} bloc${blocks > 1 ? 's' : ''} · environ ${Math.round(blocks * 11.5 + 1)} s · accusé de réception et relecture par le destinataire</p>`;
+          <p class="mv-hint">${onAir} caractères · ${blocks} bloc${blocks > 1 ? 's' : ''} · environ ${Math.round(blocks * 11.5 + 1)} s · accusé de réception et collationnement par le destinataire</p>`;
       },
       bind: (r) => {
         const add = r.querySelector('[data-act="addmist"]');
@@ -466,11 +466,11 @@
   function renderCard(textEl, body, info) {
     const dec = M.decode(body);
     if (!dec) return false;
-    const title = (dec.readback ? 'RELECTURE · ' : '') + (dec.nine ? '9-LINE MEDEVAC' : 'MIST');
+    const title = (dec.readback ? 'COLLATIONNEMENT · ' : '') + (dec.nine ? '9-LINE MEDEVAC' : 'MIST');
     const rb = info.readback;
     const rbHtml = rb ? `<div class="mv-rb ${rb.ok ? 'ok' : 'ko'}">${rb.ok
-      ? '&#10003; Relu conforme par ' + esc(opts.callLabel(rb.by))
-      : '&#9888; Relecture de ' + esc(opts.callLabel(rb.by)) + ' différente : ' + esc(rb.lines.join(', '))}</div>` : '';
+      ? '&#10003; Collationné conforme par ' + esc(opts.callLabel(rb.by))
+      : '&#9888; Collationnement de ' + esc(opts.callLabel(rb.by)) + ' non conforme : ' + esc(rb.lines.join(', '))}</div>` : '';
     textEl.innerHTML = `<div class="mv-card${dec.readback ? ' readback' : ''}">
       <div class="mv-card-title">${esc(title)}</div>
       ${linesHtml(dec, info.call, true)}
@@ -487,7 +487,7 @@
     const dec = M.decode(body);
     if (!dec) return;
     const text = M.toText(dec, opts.callLabel(info.call), info.time);
-    const title = (dec.readback ? 'RELECTURE · ' : '') + (dec.nine ? '9-LINE MEDEVAC' : 'MIST');
+    const title = (dec.readback ? 'COLLATIONNEMENT · ' : '') + (dec.nine ? '9-LINE MEDEVAC' : 'MIST');
     closeViewer();
     const v = el(`<div class="mv-viewer" role="dialog" aria-modal="true">
       <div class="mv-viewer-head">

@@ -7,7 +7,7 @@
  *   /M + n + n × 11 car.            MIST, n blessés (n codé sur 1 car., 1 à 11)
  *   /9 + 22 car. + /M + n + ...     9-line suivi de ses fiches MIST
  * puis une remarque libre facultative. Le marqueur ? au lieu du premier /
- * signale une relecture (collationnement) : le récepteur renvoie ce qu'il a reçu.
+ * signale un collationnement : le récepteur renvoie ce qu'il a reçu.
  *
  * Chaque bloc de champs est un entier en base mixte (un rang par champ), écrit
  * en base 41 avec l'alphabet FT8 sans l'espace : FT8 rogne les espaces en fin
@@ -492,7 +492,7 @@
 
   /** Texte en clair complet, pour partager, imprimer ou le QR code. */
   function toText(msg, call, when) {
-    const title = (msg.readback ? 'RELECTURE ' : '') + (msg.nine ? '9-LINE MEDEVAC' : 'MIST')
+    const title = (msg.readback ? 'COLLATIONNEMENT ' : '') + (msg.nine ? '9-LINE MEDEVAC' : 'MIST')
       + (call ? ' de ' + call : '') + (when ? ' · ' + when : '');
     const out = [title];
     let lastHead = null;
@@ -508,7 +508,7 @@
     return out.join('\n');
   }
 
-  /** Lignes qui diffèrent entre deux messages décodés (relecture), ex. ['3', '6', 'Blessé 1']. */
+  /** Lignes qui diffèrent entre deux messages décodés (collationnement), ex. ['3', '6', 'Blessé 1']. */
   function diff(a, b) {
     const la = lines(a, ''), lb = lines(b, '');
     const key = (l) => (l.n ? String(l.n) : l.label);

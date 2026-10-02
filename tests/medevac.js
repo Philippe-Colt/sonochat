@@ -98,7 +98,7 @@ console.log('Message complet');
   const only = M.decode(M.encode({ mist: [mist] }));
   check('MIST seul', only && !only.nine && only.mist.length === 1 && only.kind === 'MIST', only);
   const rb = M.encode({ nine, readback: true });
-  check('relecture : marqueur ?9', rb.startsWith('?9') && M.decode(rb).readback === true, rb);
+  check('collationnement : marqueur ?9', rb.startsWith('?9') && M.decode(rb).readback === true, rb);
   check('texte normal : non formaté', M.decode('BONJOUR') === null && M.decode('/9ABC') === null);
   check('9-line abîmé (trame perdue) : texte simple', M.decode('/9' + '…'.repeat(22)) === null);
   const txt = M.toText(d, 'PC', '14:40');
@@ -106,8 +106,8 @@ console.log('Message complet');
     && /3\. Blessés par urgence : 1A 2C/.test(txt) && /9\. NRBC : C — Chimique/.test(txt) && /1\. Position : 31U DQ \d{4} \d{4} — 48,8584 N/.test(txt), txt);
   check('texte en clair : MIST', /Blessé 2 · A urgent · blessé à 14:35Z/.test(txt) && /S : AVPU V · pouls 120 · resp. 24 · SpO2 92 %/.test(txt), txt);
   const changed = M.decode(M.encode({ nine: { ...nine, counts: [2, 0, 2, 0, 0], marking: 0 }, mist: [mist, { ...mist, patient: 3 }], remark: 'lz au nord du pont' }));
-  check('relecture : lignes différentes', JSON.stringify(M.diff(d, changed)) === JSON.stringify(['3', '7']), M.diff(d, changed));
-  check('relecture : conforme', M.diff(d, M.decode(body)).length === 0);
+  check('collationnement : lignes différentes', JSON.stringify(M.diff(d, changed)) === JSON.stringify(['3', '7']), M.diff(d, changed));
+  check('collationnement : conforme', M.diff(d, M.decode(body)).length === 0);
 }
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');

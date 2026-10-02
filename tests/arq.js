@@ -303,10 +303,10 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     check('9-line : texte reçu intact', doneMsgs(B).some((m) => m.text === 'PC' + nine), doneMsgs(B).map((m) => m.text).join(' | '));
     const r2 = await exchange(sim, A, 'PCBONJOUR', 'standard');
     check('texte normal : toujours pas d\'accusé', r2.status === 'failed');
-    // Relecture (?9) renvoyée par B : A l'accuse même case décochée
+    // Collationnement (?9) renvoyé par B : A l'accuse même case décochée
     A.ackEnabled = (text) => typeof text === 'string' && /^[/?][9M]/.test(text.slice(2));
     const r3 = await exchange(sim, B, 'XY?' + nine.slice(1), 'extended');
-    check('relecture ?9 : accusée par l\'émetteur', r3.status === 'confirmed', JSON.stringify(r3));
+    check('collationnement ?9 : accusé par l\'émetteur', r3.status === 'confirmed', JSON.stringify(r3));
   }
 
   console.log('Indicatif de la station qui accuse');

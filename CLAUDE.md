@@ -92,7 +92,7 @@ Format sur l'air (après l'indicatif) — **à ne jamais réordonner**, seulemen
 ```
 /9 + 22 car.                  9-line (lignes 1 à 9)            → 26 car. = 2 blocs étendus
 /M + n + n × 11 car.          MIST, n blessés (1-11, 9 après un 9-line)
-? au lieu du premier /        relecture (collationnement) du message reçu
+? au lieu du premier /        collationnement du message reçu
 puis remarque libre facultative (≤ 128 car. au total)
 ```
 - Chaque bloc de champs = un entier en base mixte (`NINE_RADIX`, `MIST_RADIX`), écrit en
@@ -104,9 +104,9 @@ puis remarque libre facultative (≤ 128 car. au total)
 - Toujours en **étendu, accusé forcé** : `ackEnabled(text)` (arq.js passe le texte reçu) accuse
   un message `/9` ou `/M` même case « Accusés » décochée. Puis le récepteur **renvoie** le message
   avec `?` (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur
-  compare (`checkReadback`) → « Relu conforme par XY » ou les lignes qui diffèrent (`msg.readback`).
-  La relecture part elle aussi avec accusé (forcé chez l'émetteur) : le récepteur voit
-  « ✓✓ reçu par PC » sur sa relecture.
+  compare (`checkReadback`) → « Collationné conforme par XY » ou les lignes qui diffèrent (`msg.readback`).
+  Le collationnement part lui aussi avec accusé (forcé chez l'émetteur) : le récepteur voit
+  « ✓✓ reçu par PC » sur son collationnement.
 - **Alerte** : dès qu'un message reçu commence par `/9` (premier bloc, avant la fin), la station
   passe en alerte (`enterMedevacAlert`) : fond rouge (`body.alert-9line`), bandeau, vibration,
   mode **étendu** et case **Accusés** cochée (enregistrés). « Fin d'alerte » remet le mode et les

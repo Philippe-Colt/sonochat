@@ -188,11 +188,11 @@
 
   // === Messages formates : 9-line MEDEVAC et MIST (medevac.js, medevac-ui.js) ===
   // Toujours en etendu, avec accuse. Le recepteur renvoie ensuite ce qu'il a recu
-  // (marqueur ? au lieu de /) : l'emetteur compare et affiche « relu conforme »
+  // (marqueur ? au lieu de /) : l'emetteur compare et affiche « collationne conforme »
   // ou les lignes qui different.
-  const READBACK_DELAY_MS = 2000;      // apres notre accuse, avant la relecture
+  const READBACK_DELAY_MS = 2000;      // apres notre accuse, avant le collationnement
   const READBACK_WINDOW_MS = 15 * 60 * 1000;
-  const _readbackDone = new Map();     // corps -> heure : une relecture par message
+  const _readbackDone = new Map();     // corps -> heure : un collationnement par message
 
   // Alerte 9-line : des l'en-tete recue, fond rouge, mode etendu et accuses
   // coches (la station va devoir repondre). « Fin d'alerte » remet le mode
@@ -243,7 +243,7 @@
     settingTxMode.dispatchEvent(new Event('change'));
   }
 
-  /** 9-line, MIST ou leur relecture : accuse force. */
+  /** 9-line, MIST ou leur collationnement : accuse force. */
   function isFormattedOnAir(text) {
     return typeof text === 'string' && Medevac.isFormatted(splitCallsign(text).body);
   }
@@ -271,7 +271,7 @@
       checkReadback(dec, body, call);
       return;
     }
-    // Relecture : une fois par message, apres notre accuse (sinon on le couvrirait)
+    // Collationnement : une fois par message, apres notre accuse (sinon on le couvrirait)
     const now = Date.now();
     if (now - (_readbackDone.get(body) || 0) < READBACK_WINDOW_MS) return;
     _readbackDone.set(body, now);
@@ -282,12 +282,12 @@
         setTimeout(trySend, 1000);
         return;
       }
-      sendText(readback, 'extended', true); // l'emetteur accuse la relecture : la boucle est fermee
+      sendText(readback, 'extended', true); // l'emetteur accuse le collationnement : la boucle est fermee
     };
     setTimeout(trySend, READBACK_DELAY_MS);
   }
 
-  /** Relecture recue : la comparer au dernier message formate envoye du meme type. */
+  /** Collationnement recu : le comparer au dernier message formate envoye du meme type. */
   function checkReadback(dec, body, call) {
     const original = '/' + body.slice(1);
     const now = Date.now();

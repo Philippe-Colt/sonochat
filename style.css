@@ -618,7 +618,11 @@ header h1 .h1-sub {
 /* Mise a jour obligatoire de l'application Android */
 .update-gate {
   position: fixed;
-  inset: 0;
+  /* pas inset: 0 : inconnu avant Chrome 87 (Android 9, WebView non mise a jour) */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 1000;
   display: grid;
   place-items: center;
@@ -896,7 +900,11 @@ header h1 .h1-sub {
 /* Saisie plein ecran */
 .mv-overlay, .mv-viewer {
   position: fixed;
-  inset: 0;
+  /* pas inset: 0 : inconnu avant Chrome 87 (Android 9, WebView non mise a jour) */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 900;
   display: flex;
   flex-direction: column;
@@ -1211,3 +1219,24 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 @media (prefers-reduced-motion: reduce) {
   .medevac-alert { animation: none; }
 }
+
+/* Navigateurs sans « gap » en flexbox (Chrome < 84, detectFlexGap dans app.js) :
+   marges entre les elements des rangees et colonnes principales */
+.no-flex-gap #tx-bar > * + *,
+.no-flex-gap #input-area > * + *,
+.no-flex-gap .mv-counter-row > * + *,
+.no-flex-gap .mv-nav > * + *,
+.no-flex-gap .mv-edit > * + *,
+.no-flex-gap .mv-freq > * + *,
+.no-flex-gap .mv-head > * + *,
+.no-flex-gap .mv-viewer-head > * + *,
+.no-flex-gap .medevac-alert > * + *,
+.no-flex-gap .station-pos-row > * + *,
+.no-flex-gap .mv-line > * + * { margin-left: 8px; }
+
+.no-flex-gap .mv-body > * + *,
+.no-flex-gap .mv-viewer-body > * + *,
+.no-flex-gap .mv-card > * + *,
+.no-flex-gap .mv-lines > * + *,
+.no-flex-gap .mv-remark > * + * { margin-top: 8px; }
+.no-flex-gap #tx-bar > .medevac-btn { margin-left: auto; }

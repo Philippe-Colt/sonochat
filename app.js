@@ -90,7 +90,23 @@
     window.history.replaceState(null, '', location.pathname + location.search); // `history` est l'historique des messages
   }
 
+  /**
+   * « gap » des flexbox inconnu avant Chrome 84 (Android 9 sans WebView a jour) :
+   * classe no-flex-gap, style.css remet des marges a la place.
+   */
+  function detectFlexGap() {
+    const d = document.createElement('div');
+    d.style.cssText = 'display:flex;flex-direction:column;row-gap:1px;position:absolute;visibility:hidden';
+    d.appendChild(document.createElement('div'));
+    d.appendChild(document.createElement('div'));
+    document.body.appendChild(d);
+    const ok = d.scrollHeight === 1;
+    d.remove();
+    document.documentElement.classList.toggle('no-flex-gap', !ok);
+  }
+
   function init() {
+    detectFlexGap();
     importMigration();
     initMedevac();
     loadDirectory();

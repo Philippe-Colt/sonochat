@@ -2,10 +2,10 @@
  * Messages formatés ChatMTX : demande d'évacuation sanitaire « 9-line » (OTAN)
  * et fiche blessé MIST. Sans DOM : codage, décodage, MGRS, texte en clair.
  *
- * Sur l'air, après l'indicatif court (2 car.) de l'émetteur :
- *   /9 + 22 car.                    9-line (lignes 1 à 9)
+ * Sur l'air, après l'en-tête (émetteur 2 car. + destinataire 2 car.) :
+ *   /9 + 20 car.                    9-line (lignes 1 à 9) : 26 car. en tout, 2 blocs étendus
  *   /M + n + n × 11 car.            MIST, n blessés (n codé sur 1 car., 1 à 11)
- *   /9 + 22 car. + /M + n + ...     9-line suivi de ses fiches MIST
+ *   /9 + 20 car. + /M + n + ...     9-line suivi de ses fiches MIST
  * puis une remarque libre facultative. Le marqueur ? au lieu du premier /
  * signale un collationnement : le récepteur renvoie ce qu'il a reçu.
  *
@@ -18,7 +18,8 @@
 
   const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?'; // 41 : alphabet FT8 sans espace
   const BASE = BigInt(DIGITS.length);
-  const VERSION = 0;
+  const VERSION = 0;        // MIST
+  const NINE_VERSION = 1;   // 9-line resserré à 20 car. (destinataire dans l'en-tête)
 
   // ============================================================
   // Listes de choix (l'ordre fait partie du format : ne jamais réordonner,
@@ -44,10 +45,9 @@
     { code: 'X', label: 'Ennemi présent, escorte armée' },
   ];
   const WOUNDS = [ // ligne 6 en temps de paix
-    { code: 'T', label: 'Traumatisme' },
+    { code: 'T', label: 'Traumatisme, fracture' },
     { code: 'B', label: 'Plaie par balle' },
     { code: 'R', label: 'Brûlure' },
-    { code: 'F', label: 'Fracture' },
     { code: 'C', label: 'Trauma crânien' },
     { code: 'H', label: 'Hémorragie' },
     { code: 'M', label: 'Maladie, malaise' },
@@ -74,10 +74,9 @@
   ];
   const TERRAIN = [ // ligne 9 en temps de paix
     { code: 'P', label: 'Plat, dégagé' },
-    { code: 'S', label: 'En pente' },
+    { code: 'S', label: 'Pente, montagne' },
     { code: 'F', label: 'Boisé' },
     { code: 'U', label: 'Urbain' },
-    { code: 'M', label: 'Montagne' },
     { code: 'W', label: 'Eau, marais' },
     { code: 'O', label: 'Obstacles (câbles)' },
   ];
@@ -102,17 +101,21 @@
   ];
 
   const MAX_COUNT = 9;       // blessés par catégorie d'urgence (ligne 3)
-  const MAX_LA = 31;         // couchés, assis (ligne 5)
-  const MAX_MIST = 11;       // fiches MIST seules par message (2 + 3 + 11 × 11 ≤ 128)
-  const MAX_MIST_WITH_NINE = 9; // après un 9-line (2 + 24 + 3 + 9 × 11 ≤ 128)
+  const MAX_TOTAL = 5 * MAX_COUNT; // ligne 5 : couchés ≤ total ligne 3, assis = le reste
+  const MAX_MIST = 11;       // fiches MIST seules par message (en-tête 4 + 3 + 11 × 11 = 128)
+  const MAX_MIST_WITH_NINE = 9; // après un 9-line (4 + 22 + 3 + 9 × 11 = 128)
 
   // Rangs des champs, du plus significatif au moins significatif
+  // Lignes 6 et 9 et guerre/paix en un seul rang : guerre = sécurité × NRBC (4 × 16),
+  // paix = blessures × terrain (2^6 × 2^6), à la suite
+  const WAR_L69 = SECURITY.length * (1 << NBC.length);
+  const PEACE_BITS = 6;
   const NINE_RADIX = [
-    ['version', 4], ['peace', 2],
-    ['lat', 1800001], ['lon', 3600000], ['freq', 1000000],
+    ['version', 2],
+    ['lat', 1800001], ['lon', 3600000], ['freq', 224001],
     ['cA', 10], ['cB', 10], ['cC', 10], ['cD', 10], ['cE', 10],
-    ['equip', 8], ['litter', 32], ['ambul', 32],
-    ['l6', 128], ['marking', 5], ['nation', 32], ['l9', 128],
+    ['equip', 8], ['litter', MAX_TOTAL + 1],
+    ['l69', WAR_L69 + (1 << (2 * PEACE_BITS))], ['marking', 5], ['nation', 32],
   ];
   const MIST_RADIX = [
     ['version', 4], ['patient', 16], ['prec', 5], ['time', 289], ['mech', 12],
@@ -126,7 +129,7 @@
     for (let p = 1n; p < max; p *= BASE) n++;
     return n;
   }
-  const NINE_LEN = digitsFor(NINE_RADIX);   // 22
+  const NINE_LEN = digitsFor(NINE_RADIX);   // 20
   const MIST_LEN = digitsFor(MIST_RADIX);   // 11
 
   function pack(radix, values, len) {
@@ -167,42 +170,62 @@
   // 9-LINE
   // ============================================================
 
+  // Fréquence : 0 = non précisée ; jusqu'à 30 MHz au kHz près (HF), au-delà au pas de 5 kHz
+  const HF_MAX_KHZ = 30000, VHF_STEP_KHZ = 5;
+  function encodeFreq(kHz) {
+    kHz = Math.round(kHz || 0);
+    if (kHz <= 0) return 0;
+    if (kHz <= HF_MAX_KHZ) return kHz;
+    return HF_MAX_KHZ + Math.min(194000, Math.max(1, Math.round((kHz - HF_MAX_KHZ) / VHF_STEP_KHZ)));
+  }
+  function decodeFreq(v) {
+    return v <= HF_MAX_KHZ ? v : HF_MAX_KHZ + (v - HF_MAX_KHZ) * VHF_STEP_KHZ;
+  }
+  /** Fréquence telle qu'elle sera transmise (arrondi au pas de 5 kHz au-dessus de 30 MHz). */
+  const roundFreq = (kHz) => decodeFreq(encodeFreq(kHz));
+
   /**
    * @param {object} d
    *   lat, lon (degrés) · freqKHz (0 = non précisée) · counts [A..E] · equip [indices EQUIPMENT]
-   *   litter, ambul · peace (bool) · security (indice SECURITY, guerre) · wounds [indices WOUNDS, paix]
+   *   litter (couchés ; assis = total ligne 3 − couchés) · peace (bool)
+   *   security (indice SECURITY, guerre) · wounds [indices WOUNDS, paix]
    *   marking (indice) · nation [indices] · nbc [indices NBC, guerre] · terrain [indices TERRAIN, paix]
-   * @returns {string} 22 caractères
+   * @returns {string} 20 caractères
    */
   function encodeNine(d) {
     const latI = Math.round((d.lat + 90) * 1e4);
     const lonI = ((Math.round((d.lon + 180) * 1e4) % 3600000) + 3600000) % 3600000;
     const c = d.counts || [];
+    const total = [0, 1, 2, 3, 4].reduce((a, i) => a + (c[i] || 0), 0);
+    const l69 = d.peace
+      ? WAR_L69 + (maskOf(d.wounds) << PEACE_BITS) + maskOf(d.terrain)
+      : (d.security || 0) * (1 << NBC.length) + maskOf(d.nbc);
     return pack(NINE_RADIX, {
-      version: VERSION, peace: d.peace ? 1 : 0,
-      lat: latI, lon: lonI, freq: Math.round(d.freqKHz || 0),
+      version: NINE_VERSION,
+      lat: latI, lon: lonI, freq: encodeFreq(d.freqKHz),
       cA: c[0] || 0, cB: c[1] || 0, cC: c[2] || 0, cD: c[3] || 0, cE: c[4] || 0,
-      equip: maskOf(d.equip), litter: d.litter || 0, ambul: d.ambul || 0,
-      l6: d.peace ? maskOf(d.wounds) : (d.security || 0),
-      marking: d.marking || 0, nation: maskOf(d.nation),
-      l9: d.peace ? maskOf(d.terrain) : maskOf(d.nbc),
+      equip: maskOf(d.equip), litter: Math.min(d.litter || 0, total),
+      l69, marking: d.marking || 0, nation: maskOf(d.nation),
     }, NINE_LEN);
   }
 
   function decodeNine(str) {
     const v = unpack(NINE_RADIX, str);
-    if (!v || v.version !== VERSION) return null;
-    const peace = v.peace === 1;
-    if (!peace && v.l6 >= SECURITY.length) return null;
-    if (!peace && v.l9 >= 1 << NBC.length) return null;
+    if (!v || v.version !== NINE_VERSION) return null;
+    const counts = [v.cA, v.cB, v.cC, v.cD, v.cE];
+    const total = counts.reduce((a, b) => a + b, 0);
+    if (v.litter > total) return null;
+    const peace = v.l69 >= WAR_L69;
+    const p = v.l69 - WAR_L69;
     return {
-      lat: v.lat / 1e4 - 90, lon: v.lon / 1e4 - 180, freqKHz: v.freq,
-      counts: [v.cA, v.cB, v.cC, v.cD, v.cE],
-      equip: bitsOf(v.equip, EQUIPMENT.length), litter: v.litter, ambul: v.ambul,
+      lat: v.lat / 1e4 - 90, lon: v.lon / 1e4 - 180, freqKHz: decodeFreq(v.freq),
+      counts, equip: bitsOf(v.equip, EQUIPMENT.length), litter: v.litter, ambul: total - v.litter,
       peace,
-      security: peace ? null : v.l6, wounds: peace ? bitsOf(v.l6, WOUNDS.length) : [],
+      security: peace ? null : Math.floor(v.l69 / (1 << NBC.length)),
+      wounds: peace ? bitsOf(p >> PEACE_BITS, WOUNDS.length) : [],
       marking: v.marking, nation: bitsOf(v.nation, NATIONALITY.length),
-      nbc: peace ? [] : bitsOf(v.l9, NBC.length), terrain: peace ? bitsOf(v.l9, TERRAIN.length) : [],
+      nbc: peace ? [] : bitsOf(v.l69 % (1 << NBC.length), NBC.length),
+      terrain: peace ? bitsOf(p & ((1 << PEACE_BITS) - 1), TERRAIN.length) : [],
     };
   }
 
@@ -525,7 +548,7 @@
   }
 
   const Medevac = {
-    DIGITS, NINE_LEN, MIST_LEN, MAX_COUNT, MAX_LA, MAX_MIST, MAX_MIST_WITH_NINE,
+    DIGITS, NINE_LEN, MIST_LEN, MAX_COUNT, MAX_TOTAL, MAX_MIST, MAX_MIST_WITH_NINE, roundFreq,
     PRECEDENCE, EQUIPMENT, SECURITY, WOUNDS, MARKING, NATIONALITY, NBC, TERRAIN,
     MECHANISM, REGIONS, AVPU, TREATMENT,
     encode, decode, isFormatted, encodeNine, decodeNine, encodeMist, decodeMist,

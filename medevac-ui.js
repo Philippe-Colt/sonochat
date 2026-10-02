@@ -3,12 +3,14 @@
  * avec de très gros boutons, carte dans le fil de discussion, affichage plein
  * écran, partage, QR code, impression. Le codage est dans medevac.js.
  *
- * MedevacUI.init({ getCall, callLabel, getStation, savePeace, send, isNative, share })
+ * MedevacUI.init({ getCall, callLabel, getStation, savePeace, send, isNative, share, getDest, knownStations })
  *   getCall()      indicatif court de la station (ligne 2)
+ *   getDest()      destinataire courant ('' : aucun, '99' : en l'air)
+ *   knownStations() [{call, label}] : annuaire et stations entendues
  *   callLabel(c)   indicatif affiché (annuaire : court → long)
  *   getStation()   {pos: texte saisi dans les paramètres, freq: MHz, peace: bool}
  *   savePeace(b)   mémorise le dernier choix guerre/paix
- *   send(body)     émet le corps du message (étendu, accusé forcé) ; Promise
+ *   send(body, to) émet le corps du message vers `to` (étendu, accusé du destinataire)
  *   share(text)    partage natif (application) ou null
  */
 (function () {
@@ -61,19 +63,72 @@
       opts.askCall();
       return;
     }
-    st = { nine: null, mist: [], remark: '' };
+    const d = opts.getDest();
+    // Un message formaté exige un accusé : jamais « en l'air » (99)
+    if (!st || !st.keepTo) st = { nine: null, mist: [], remark: '', to: d && d !== '99' ? d : '' };
+    st.keepTo = false;
     showOverlay();
     renderFrame({
       title: 'Message formaté',
-      sub: 'Envoyé en une fois, avec accusé de réception et collationnement',
+      sub: 'Envoyé en une fois, accusé de réception et collationnement du destinataire',
       body: `<div class="mv-grid mv-grid-1">
+        <button type="button" class="mv-big${st.to ? '' : ' mv-red'}" data-act="to"><b>${st.to ? 'TO ' + esc(opts.callLabel(st.to)) : 'TO ?'}</b><span>${st.to ? 'Destinataire (toucher pour changer)' : 'Choisir le destinataire'}</span></button>
         <button type="button" class="mv-big mv-red" data-act="nine"><b>9-LINE</b><span>Demande d'évacuation sanitaire</span></button>
         <button type="button" class="mv-big" data-act="mist"><b>MIST</b><span>Fiche blessé seule</span></button>
       </div>`,
       nav: false,
     });
-    overlay.querySelector('[data-act="nine"]').onclick = () => { st.nine = newNine(); startSteps(nineSteps()); };
-    overlay.querySelector('[data-act="mist"]').onclick = () => { st.mist.push(newPatient(1)); startSteps(mistSteps(0)); };
+    const withTo = (go) => () => {
+      if (st.to) { go(); return; }
+      pickStation({ title: 'Destinataire du message', current: '', allowBroadcast: false, stations: opts.knownStations(),
+        onPick: (c) => { st.to = c; go(); } });
+    };
+    overlay.querySelector('[data-act="to"]').onclick = () => pickStation({ title: 'Destinataire du message', current: st.to,
+      allowBroadcast: false, stations: opts.knownStations(), onPick: (c) => { st.to = c; st.keepTo = true; openChooser(); } });
+    overlay.querySelector('[data-act="nine"]').onclick = withTo(() => { st.nine = newNine(); startSteps(nineSteps()); });
+    overlay.querySelector('[data-act="mist"]').onclick = withTo(() => { st.mist.push(newPatient(1)); startSteps(mistSteps(0)); });
+  }
+
+  // ============================================================
+  // CHOIX D'UNE STATION (destinataire)
+  // ============================================================
+
+  /**
+   * Liste à gros boutons : 99 (en l'air, si permis), stations connues, saisie libre.
+   * @param {{title, current, allowBroadcast, stations, onPick}} o
+   */
+  function pickStation(o) {
+    const p = el('<div class="mv-overlay mv-picker" role="dialog" aria-modal="true"></div>');
+    const btn = (call, big, small, extra = '') => `<button type="button" class="mv-big${call === o.current ? ' on' : ''}${extra}" data-call="${esc(call)}"><b>${esc(big)}</b><span>${esc(small)}</span></button>`;
+    p.innerHTML = `
+      <div class="mv-head">
+        <button type="button" class="mv-x" data-act="close" aria-label="Fermer">&times;</button>
+        <div class="mv-titles"><h2>${esc(o.title)}</h2><p>Seul le destinataire accuse réception</p></div>
+      </div>
+      <div class="mv-body">
+        <div class="mv-grid mv-grid-1">
+          ${o.allowBroadcast ? btn('99', '99 · TOUS', 'Message en l\'air : tout le monde reçoit, personne n\'accuse') : ''}
+        </div>
+        <div class="mv-grid mv-grid-2">
+          ${o.stations.map((x) => btn(x.call, x.label, x.label !== x.call ? 'code ' + x.call : 'station connue')).join('')}
+        </div>
+        <div class="mv-edit"><input type="text" id="mv-call-input" maxlength="2" autocapitalize="characters" spellcheck="false" placeholder="Autre : XY"><button type="button" class="mv-navbtn mv-next" data-act="other">OK</button></div>
+        <p class="mv-pos-msg" id="mv-call-msg"></p>
+      </div>`;
+    document.body.appendChild(p);
+    const done = (c) => { p.remove(); o.onPick(c); };
+    p.querySelector('[data-act="close"]').onclick = () => p.remove();
+    p.querySelectorAll('[data-call]').forEach((b) => { b.onclick = () => done(b.dataset.call); });
+    const input = p.querySelector('#mv-call-input');
+    input.oninput = () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 2); };
+    p.querySelector('[data-act="other"]').onclick = () => {
+      const c = input.value;
+      if (!/^[A-Z0-9]{2}$/.test(c) || (c === '99' && !o.allowBroadcast)) {
+        p.querySelector('#mv-call-msg').textContent = c === '99' ? 'Un message formaté demande un destinataire précis.' : 'Indicatif court : 2 lettres ou chiffres.';
+        return;
+      }
+      done(c);
+    };
   }
 
   function showOverlay() {
@@ -246,13 +301,21 @@
         progress: p(2), title: 'Fréquence de contact',
         sub: 'Indicatif : ' + opts.callLabel(opts.getCall()),
         body: () => `<div class="mv-freq"><input type="text" id="mv-freq" inputmode="decimal" value="${n.freqKHz ? (n.freqKHz / 1000).toFixed(3) : ''}" placeholder="145.500"><span>MHz</span></div>
-          <p class="mv-hint">Réglable une fois pour toutes dans les paramètres (fréquence de contact). Vide : non précisée.</p>`,
+          <p class="mv-hint" id="mv-freq-sent"></p>
+          <p class="mv-hint">Réglable une fois pour toutes dans les paramètres (fréquence de contact). Vide : non précisée. Transmise au kHz près jusqu'à 30 MHz, au pas de 5 kHz au-dessus.</p>`,
         bind: (r) => {
           const i = r.querySelector('#mv-freq');
+          const hint = r.querySelector('#mv-freq-sent');
+          const show = () => {
+            const sent = M.roundFreq(n.freqKHz);
+            hint.textContent = n.freqKHz && sent !== n.freqKHz ? 'Sera transmise : ' + M.formatFreq(sent) : '';
+          };
           i.oninput = () => {
             const f = parseFloat(i.value.replace(',', '.'));
             n.freqKHz = Number.isFinite(f) && f > 0 && f < 1000 ? Math.round(f * 1000) : 0;
+            show();
           };
+          show();
         },
       },
       {
@@ -275,10 +338,16 @@
       },
       {
         progress: p(5), title: 'Couchés et assis',
-        sub: () => `Total des blessés : ${n.counts.reduce((a, b) => a + b, 0)}`,
-        body: () => counter('litter', 'L · Couchés (brancard)', n.litter) + counter('ambul', 'A · Assis (valides)', n.ambul),
-        bind: (r) => bindCounters(r, (id) => n[id], (id, d) => { n[id] = Math.max(0, Math.min(M.MAX_LA, n[id] + +d)); }),
-        valid: () => n.litter + n.ambul > 0,
+        sub: () => `Total des blessés (ligne 3) : ${n.counts.reduce((a, b) => a + b, 0)}`,
+        body: () => {
+          const total = n.counts.reduce((a, b) => a + b, 0);
+          n.litter = Math.min(n.litter, total);
+          return counter('litter', 'L · Couchés (brancard)', n.litter)
+            + `<div class="mv-counter"><span class="mv-counter-label">A · Assis (valides) : le reste</span><div class="mv-counter-row"><output>${total - n.litter}</output></div></div>`;
+        },
+        bind: (r) => bindCounters(r, (id) => n[id], (id, d) => {
+          n.litter = Math.max(0, Math.min(n.counts.reduce((a, b) => a + b, 0), n.litter + +d));
+        }),
       },
       n.peace ? {
         progress: p(6), title: 'Blessures', sub: 'Plusieurs choix possibles',
@@ -398,11 +467,12 @@
         const body = M.encode(currentMessage());
         const dec = M.decode(body);
         const call = opts.getCall();
-        const onAir = call.length + body.length;
+        const onAir = call.length + st.to.length + body.length;
         const blocks = Math.ceil(onAir / 13);
         const max = st.nine ? M.MAX_MIST_WITH_NINE : M.MAX_MIST;
         const room = 128 - onAir;
-        return `${linesHtml(dec, call)}
+        return `<p class="mv-fmto">FM ${esc(opts.callLabel(call))} TO ${esc(opts.callLabel(st.to))}</p>
+          ${linesHtml(dec, call)}
           <div class="mv-grid mv-grid-1">
             ${st.mist.length < max ? `<button type="button" class="mv-big" data-act="addmist"><b>+ MIST</b><span>Ajouter une fiche blessé (${st.mist.length}/${max})</span></button>` : ''}
           </div>
@@ -430,7 +500,7 @@
         next.onclick = () => {
           const body = M.encode(currentMessage());
           closeOverlay();
-          opts.send(body);
+          opts.send(body, st.to);
         };
       },
     };
@@ -563,5 +633,5 @@
     setTimeout(() => t.remove(), 3000);
   }
 
-  window.MedevacUI = { init, openChooser, renderCard, openViewer };
+  window.MedevacUI = { init, openChooser, renderCard, openViewer, pickStation };
 })();

@@ -58,16 +58,10 @@
         </div>
 
         <div id="tx-bar">
+            <span class="fmto">FM</span>
             <button id="my-call" class="call-badge" type="button" title="Mon indicatif (modifiable dans les parametres)"></button>
-            <select id="setting-tx-mode" title="Mode de transmission">
-                <option value="standard">Standard (11 car.)</option>
-                <option value="multi-frame">Multi-trame (128 car.)</option>
-                <option value="extended">Etendu (128 car.)</option>
-            </select>
-            <label class="ack-toggle" title="Le recepteur confirme chaque trame (multi-trame) ou le message complet (standard, etendu) ; l'emetteur repete jusqu'a 3 fois. Les deux stations doivent cocher et ecouter. Decoche : diffusion vers plusieurs recepteurs.">
-                <input type="checkbox" id="setting-ack">
-                Accuses
-            </label>
+            <span class="fmto">TO</span>
+            <button id="dest-call" class="call-badge dest-badge" type="button" title="Destinataire"></button>
             <button id="btn-medevac" class="medevac-btn" type="button" title="Message formate : 9-line MEDEVAC ou fiche blessé MIST">MEDEVAC</button>
         </div>
 
@@ -111,6 +105,15 @@
                     <label for="setting-callsign">Indicatif (2 caracteres)</label>
                     <input type="text" id="setting-callsign" maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PC">
                     <p class="setting-info">Envoye en tete de chaque message (obligatoire pour emettre). Lettres et chiffres.</p>
+                </div>
+                <div class="setting-group">
+                    <label for="setting-tx-mode">Mode de transmission</label>
+                    <select id="setting-tx-mode">
+                        <option value="extended">Etendu (126 car., une seule emission)</option>
+                        <option value="multi-frame">Multi-trame (126 car., trame par trame)</option>
+                        <option value="standard">Standard (9 car.)</option>
+                    </select>
+                    <p class="setting-info">Accuse de reception : demande au destinataire choisi a cote de votre indicatif. 99 = message en l'air, pour tous, sans accuse.</p>
                 </div>
                 <div class="setting-group">
                     <label>Annuaire des indicatifs</label>

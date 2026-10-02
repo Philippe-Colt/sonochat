@@ -46,7 +46,7 @@
   const btnMedevac = document.getElementById('btn-medevac');
   const medevacAlertEl = document.getElementById('medevac-alert');
   const medevacAlertInfo = document.getElementById('medevac-alert-info');
-  const settingAck = document.getElementById('setting-ack');
+  const destCallEl = document.getElementById('dest-call');
   const settingCallsign = document.getElementById('setting-callsign');
   const myCallEl = document.getElementById('my-call');
   const btnDirectoryImport = document.getElementById('btn-directory-import');
@@ -115,8 +115,8 @@
     link = new SonoLink({
       transmit: (frames, opts) => modem.transmitSymbols(frames.map(frameToSymbols), opts),
       abort: () => modem.cancelTransmit(),
-      // Message formate (9-line, MIST) : accuse toujours, meme case decochee
-      ackEnabled: (text) => modem.listening && (settingAck.checked || isFormattedOnAir(text)),
+      // Seul le destinataire accuse (et toujours) ; 99 = message en l'air, personne
+      ackEnabled: (text) => modem.listening && isForMe(text),
       callsign: () => myCallsign(),
       log: (m) => console.log('[LINK] ' + m),
     });
@@ -144,12 +144,12 @@
 
   // Reception : une bulle par message SonoLink, mise a jour au fil des trames
   function onLinkRx(ev) {
-    const { call, body } = splitCallsign(ev.text);
-    // En-tete d'un 9-line (premier bloc, avant la fin du message) : alerte
-    if (body.startsWith('/9')) enterMedevacAlert(call);
+    const { call, to, body } = splitHeader(ev.text);
+    // En-tete d'un 9-line pour nous (premier bloc, avant la fin du message) : alerte
+    if (body.startsWith('/9') && to === myCallsign()) enterMedevacAlert(call);
     let b = _rxBubbles.get(ev.id);
     if (!b) {
-      const el = addMessage(body, 'received', false, 0, call);
+      const el = addMessage(body, 'received', false, 0, call, to);
       el.classList.add('receiving');
       b = { el, msg: null };
       _rxBubbles.set(ev.id, b);
@@ -157,8 +157,9 @@
     }
     b.el._msg.text = body;
     b.el._msg.call = call;
+    b.el._msg.to = to;
     renderBody(b.el);
-    setCallEl(b.el.querySelector('.msg-call'), call);
+    renderHeader(b.el);
     b.el.classList.toggle('receiving', !ev.done);
     b.el.classList.toggle('incomplete', ev.done && !ev.complete);
 
@@ -174,15 +175,16 @@
     if (ev.done) {
       // Enregistre une fois, puis met a jour si une repetition complete le message
       if (!b.msg) {
-        b.msg = { text: body, call, type: 'received', time: timeNow(), timestamp: Date.now() };
+        b.msg = { text: body, call, to, type: 'received', time: timeNow(), timestamp: Date.now() };
         history.push(b.msg);
       } else {
         b.msg.text = body;
         b.msg.call = call;
+        b.msg.to = to;
       }
       b.msg.status = ev.complete ? '' : 'incomplet';
       saveHistory();
-      if (ev.complete) onFormattedRx(body, call);
+      if (ev.complete && to === myCallsign()) onFormattedRx(body, call);
     }
   }
 
@@ -194,29 +196,31 @@
   const READBACK_WINDOW_MS = 15 * 60 * 1000;
   const _readbackDone = new Map();     // corps -> heure : un collationnement par message
 
-  // Alerte 9-line : des l'en-tete recue, fond rouge, mode etendu et accuses
-  // coches (la station va devoir repondre). « Fin d'alerte » remet le mode
-  // et les accuses d'avant. L'alerte survit a un rechargement.
+  // Alerte 9-line : des l'en-tete d'un 9-line qui nous est adresse, fond rouge,
+  // mode etendu et destinataire = l'emetteur (la station va devoir lui repondre).
+  // « Fin d'alerte » remet le mode et le destinataire d'avant. Survit a un rechargement.
   const ALERT_KEY = 'chatmtx-medevac-alert';
-  let medevacAlert = null;   // {by, time, prevMode, prevAck}
+  let medevacAlert = null;   // {by, time, prevMode, prevDest}
 
   function enterMedevacAlert(call) {
     if (medevacAlert) {
       if (call && call !== medevacAlert.by) { medevacAlert.by = call; showMedevacAlert(); }
       return;
     }
-    medevacAlert = { by: call || '', time: timeNow(), prevMode: settingTxMode.value, prevAck: settingAck.checked };
-    setTxModeAndAck('extended', true);
+    medevacAlert = { by: call || '', time: timeNow(), prevMode: settingTxMode.value, prevDest: getDest() };
+    setTxMode('extended');
+    if (CALL_RE.test(call || '')) setDest(call);
     showMedevacAlert();
     if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
   }
 
   function endMedevacAlert() {
     if (!medevacAlert) return;
-    const { prevMode, prevAck } = medevacAlert;
+    const { prevMode, prevDest } = medevacAlert;
     medevacAlert = null;
     try { localStorage.removeItem(ALERT_KEY); } catch (e) { /* stockage indisponible */ }
-    setTxModeAndAck(prevMode, prevAck);
+    setTxMode(prevMode || 'extended');
+    setDest(prevDest || '');
     document.body.classList.remove('alert-9line');
     medevacAlertEl.classList.add('hidden');
   }
@@ -226,7 +230,7 @@
     document.body.classList.add('alert-9line');
     medevacAlertEl.classList.remove('hidden');
     const by = medevacAlert.by ? displayCall(medevacAlert.by) : '?';
-    medevacAlertInfo.textContent = `de ${by} a ${medevacAlert.time.slice(0, 5)} · mode etendu et accuses actives`;
+    medevacAlertInfo.textContent = `de ${by} a ${medevacAlert.time.slice(0, 5)} · mode etendu, reponse vers ${by}`;
   }
 
   function restoreMedevacAlert() {
@@ -236,16 +240,10 @@
     } catch (e) { /* alerte illisible : ignoree */ }
   }
 
-  /** Change le mode et la case Accuses comme si l'utilisateur l'avait fait (enregistrement, compteur). */
-  function setTxModeAndAck(mode, ack) {
+  /** Change le mode comme si l'utilisateur l'avait fait (enregistrement, compteur). */
+  function setTxMode(mode) {
     settingTxMode.value = mode;
-    settingAck.checked = ack;
     settingTxMode.dispatchEvent(new Event('change'));
-  }
-
-  /** 9-line, MIST ou leur collationnement : accuse force. */
-  function isFormattedOnAir(text) {
-    return typeof text === 'string' && Medevac.isFormatted(splitCallsign(text).body);
   }
 
   /** Remplit .msg-text : carte si message formate, texte simple sinon. */
@@ -259,9 +257,9 @@
     if (!card) textEl.textContent = msg.text;
   }
 
-  function sendFormatted(body) {
+  function sendFormatted(body, to) {
     if (link.busy) return;
-    sendText(body, 'extended', true);
+    sendText(body, 'extended', to);
   }
 
   function onFormattedRx(body, call) {
@@ -282,7 +280,7 @@
         setTimeout(trySend, 1000);
         return;
       }
-      sendText(readback, 'extended', true); // l'emetteur accuse le collationnement : la boucle est fermee
+      sendText(readback, 'extended', call); // adresse a l'emetteur, qui l'accuse : la boucle est fermee
     };
     setTimeout(trySend, READBACK_DELAY_MS);
   }
@@ -312,13 +310,92 @@
   const CALL_RE = /^[A-Z0-9]{2}$/;
 
   function myCallsign() {
-    return CALL_RE.test(settingCallsign.value) ? settingCallsign.value : '';
+    // 99 est reserve aux messages en l'air
+    return CALL_RE.test(settingCallsign.value) && settingCallsign.value !== '99' ? settingCallsign.value : '';
   }
 
-  function splitCallsign(text) {
-    if (text.startsWith(LINK.MISSING)) return { call: '?', body: text }; // trame 1 perdue
-    return { call: text.substring(0, 2).trim() || '?', body: text.substring(2) };
+  // En-tete sur l'air : emetteur (2) + destinataire (2), 99 = message en l'air
+  const BROADCAST = '99';
+
+  function splitHeader(text) {
+    if (text.startsWith(LINK.MISSING)) return { call: '?', to: '?', body: text }; // trame 1 perdue
+    return { call: text.substring(0, 2).trim() || '?', to: text.substring(2, 4).trim() || '?', body: text.substring(4) };
   }
+
+  function isForMe(text) {
+    const me = myCallsign();
+    return typeof text === 'string' && !!me && splitHeader(text).to === me;
+  }
+
+  // === Destinataire ===
+  function getDest() {
+    return loadSettings().dest || '';
+  }
+
+  function setDest(call) {
+    const s = loadSettings();
+    s.dest = call;
+    try { localStorage.setItem('sonochat-settings', JSON.stringify(s)); } catch (e) { /* stockage indisponible */ }
+    updateDestBadge();
+  }
+
+  function updateDestBadge() {
+    const d = getDest();
+    destCallEl.classList.toggle('missing', !d);
+    destCallEl.classList.toggle('broadcast', d === BROADCAST);
+    destCallEl.textContent = !d ? 'Destinataire ?' : d === BROADCAST ? '99 Tous' : displayCall(d);
+    destCallEl.title = !d ? 'Choisir le destinataire'
+      : d === BROADCAST ? 'Message en l\'air, pour tous : aucun accuse' : 'Destinataire : il accusera reception';
+    if (typeof updateInputStateHook === 'function') updateInputStateHook();
+  }
+  let updateInputStateHook = null;
+
+  /** Stations connues : annuaire et indicatifs vus dans l'historique (les plus recents d'abord). */
+  function knownStations() {
+    const me = myCallsign();
+    const seen = [];
+    for (let i = history.length - 1; i >= 0; i--) {
+      for (const c of [history[i].call, history[i].to]) {
+        if (c && CALL_RE.test(c) && c !== BROADCAST && c !== me && !seen.includes(c)) seen.push(c);
+      }
+    }
+    for (const c of Object.keys(directory)) if (c !== me && !seen.includes(c)) seen.push(c);
+    return seen.slice(0, 16).map((c) => ({ call: c, label: displayCall(c) }));
+  }
+
+  function pickDest(then) {
+    MedevacUI.pickStation({
+      title: 'Destinataire', current: getDest(), allowBroadcast: true, stations: knownStations(),
+      onPick: (c) => { setDest(c); if (then) then(c); },
+    });
+  }
+
+  /** En-tete de bulle, formule radio « FM emetteur TO destinataire » + precision (moi, en l'air, autre station). */
+  function renderHeader(msgEl) {
+    const msg = msgEl._msg;
+    const el = msgEl.querySelector('.msg-call');
+    if (!msg || !el) return;
+    const me = myCallsign();
+    const to = msg.to;
+    let html = '<span class="fmto">FM</span> ' + callSpan(msg.call, 'span', 'call-ref');
+    let tag = '';
+    if (to) {
+      let toHtml;
+      if (to === BROADCAST) {
+        toHtml = '<span class="to-all">Tous</span>';
+        tag = 'Message en l\'air · pour tous';
+      } else if (to === me && msg.type === 'received') {
+        toHtml = '<span class="to-me">moi</span>';
+      } else {
+        toHtml = callSpan(to, 'span', 'call-ref');
+        if (msg.type === 'received' && to !== '?') tag = 'pour ' + displayCall(to) + ' · pas de reponse';
+      }
+      html += ' <span class="fmto">TO</span> ' + toHtml;
+    }
+    el.innerHTML = html + (tag ? `<span class="msg-to-tag">${escapeHtml(tag)}</span>` : '');
+    msgEl.classList.toggle('not-for-me', msg.type === 'received' && !!to && to !== me && to !== BROADCAST && to !== '?');
+  }
+
 
   function displayCall(call) {
     return lookupCall(directory, call);
@@ -354,6 +431,7 @@
   function refreshCalls() {
     messagesEl.querySelectorAll('[data-call]').forEach((el) => setCallEl(el, el.dataset.call));
     updateMyCall();
+    updateDestBadge();
   }
 
   function txStatusHtml(label, by) {
@@ -413,14 +491,12 @@
       saveAndApplySettings();
       updateInputState();
     });
-    settingAck.addEventListener('change', () => {
-      saveAndApplySettings();
-      updateInputState();
-    });
+    destCallEl.addEventListener('click', () => pickDest());
+    updateInputStateHook = updateInputState;
     settingCallsign.addEventListener('input', () => {
       const v = settingCallsign.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 2);
       if (v !== settingCallsign.value) settingCallsign.value = v;
-      const ok = CALL_RE.test(v);
+      const ok = CALL_RE.test(v) && v !== '99'; // 99 : messages en l'air
       settingCallsign.classList.toggle('required', !ok);
       if (ok) {
         const info = settingCallsign.parentElement.querySelector('.setting-info');
@@ -460,7 +536,8 @@
       btnSend.disabled = len === 0 || link.busy;
 
       if (len > 0) {
-        const dur = SonoLink.estimateDuration(msgInput.value, mode, settingAck.checked);
+        const d = getDest();
+        const dur = SonoLink.estimateDuration(myCallsign() + d + msgInput.value, mode, !!d && d !== BROADCAST);
         txDurationEl.textContent = '~' + formatDuration(dur);
       } else {
         txDurationEl.textContent = '';
@@ -532,8 +609,8 @@
     settingStationPos.value = settings.stationPos || '';
     settingContactFreq.value = settings.contactFreq || '';
     updateStationPosInfo();
-    settingTxMode.value = settings.txMode || 'standard';
-    settingAck.checked = settings.ack === true;
+    settingTxMode.value = settings.txMode || 'extended';
+    updateDestBadge();
     settingCallsign.value = settings.callsign || '';
     updateMyCall();
     updateDirectoryStatus();
@@ -559,9 +636,9 @@
     cancelled: { label: 'annule', cls: 'cancelled' },
   };
 
-  // 13 ou 130 caracteres sur l'air, dont 2 pour l'indicatif
+  // 13 ou 130 caracteres sur l'air, dont 4 pour l'en-tete (emetteur + destinataire)
   function maxTextLength(mode) {
-    return (mode === 'standard' ? 13 : 130) - 2;
+    return (mode === 'standard' ? 13 : 130) - 4;
   }
 
   function askCallsign() {
@@ -579,18 +656,24 @@
       askCallsign();
       return;
     }
+    const to = getDest();
+    if (!to) {
+      pickDest(() => sendMessage()); // premier envoi : choisir a qui
+      return;
+    }
     const mode = settingTxMode.value;
     msgInput.value = '';
     charCount.textContent = '0/' + maxTextLength(mode);
     txDurationEl.textContent = '';
-    await sendText(text, mode, settingAck.checked);
+    await sendText(text, mode, to);
   }
 
   /**
-   * Emet un texte (sans l'indicatif, ajoute ici) et suit son sort dans une bulle.
-   * Les messages formates passent par la : mode etendu, accuse force.
+   * Emet un texte (sans l'en-tete, ajoute ici) et suit son sort dans une bulle.
+   * Accuse attendu du seul destinataire ; 99 = message en l'air, sans accuse.
    */
-  async function sendText(text, mode, ack) {
+  async function sendText(text, mode, to) {
+    let ack = !!to && to !== BROADCAST;
     if (link.busy) return;
     const callsign = myCallsign();
     if (!callsign) {
@@ -613,9 +696,9 @@
       }
     }
 
-    const onAir = callsign + text;
+    const onAir = callsign + to + text;
     const totalDur = SonoLink.estimateDuration(onAir, mode, ack);
-    const msgEl = addMessage(text, 'sent', true, totalDur, callsign);
+    const msgEl = addMessage(text, 'sent', true, totalDur, callsign, to);
     _txBubble = msgEl;
 
     // Live countdown in the message
@@ -628,7 +711,7 @@
 
     let result;
     try {
-      result = await link.send(onAir, mode, { ack });
+      result = await link.send(onAir, mode, { ack, from: ack ? to : '' });
     } catch (err) {
       console.error('Erreur transmission:', err);
       result = { status: 'failed' };
@@ -645,7 +728,8 @@
     btnSend.disabled = msgInput.value.length === 0;
 
     const r = TX_RESULT[result.status] || TX_RESULT.failed;
-    let label = r.label + (note || '');
+    const inAir = msgEl._msg && msgEl._msg.to === BROADCAST && result.status === 'sent';
+    let label = (inAir ? 'en l\'air, sans accuse' : r.label) + (note || '');
     if (result.status === 'failed' && result.total > 1) label += ' (trame ' + (result.seq + 1) + ')';
     const progressEl = msgEl.querySelector('.tx-progress');
     if (progressEl) progressEl.remove();
@@ -664,13 +748,14 @@
     link.cancel();
   }
 
-  function addMessage(text, type, sending = false, txDuration = 0, call = '') {
+  function addMessage(text, type, sending = false, txDuration = 0, call = '', to = '') {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     const msg = {
       text: text,
       call: call,
+      to: to,
       type: type,
       time: timeStr,
       timestamp: now.getTime()
@@ -691,12 +776,12 @@
     }
     const sourceTag = type === 'received' ? ' <span class="rx-source">FT8</span>' : '';
     msgEl.innerHTML = `
-      ${type === 'received' ? '<div class="msg-call"></div>' : callSpan(call, 'div', 'msg-call')}
+      <div class="msg-call"></div>
       <div class="msg-text"></div>
       <div class="msg-meta">${timeStr}${metaExtra}${sourceTag}</div>
     `;
-    if (type === 'received') setCallEl(msgEl.querySelector('.msg-call'), call);
     msgEl._msg = msg;
+    renderHeader(msgEl);
     renderBody(msgEl);
 
     // Remove system message if it exists
@@ -743,11 +828,12 @@
       msgEl.className = `message ${msg.type}`;
       const status = msg.status ? ` <span class="link-status">${txStatusHtml(msg.status, msg.ackBy)}</span>` : '';
       msgEl.innerHTML = `
-        ${callSpan(msg.call, 'div', 'msg-call')}
+        <div class="msg-call"></div>
         <div class="msg-text"></div>
         <div class="msg-meta">${msg.time}${status}</div>
       `;
       msgEl._msg = msg;
+      renderHeader(msgEl);
       renderBody(msgEl);
       messagesEl.appendChild(msgEl);
     });
@@ -962,13 +1048,14 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
+    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
       const settings = { ...defaults, ...JSON.parse(saved) };
       // v1 enregistrait « Accuses » coche par defaut : on repart du nouveau defaut (decoche)
-      if (!settings.v) settings.ack = false;
+      // v3 : destinataire sur chaque message ; etendu par defaut, la case Accuses disparait
+      if (!settings.v || settings.v < 3) { settings.txMode = 'extended'; delete settings.ack; settings.v = 3; }
       return settings;
     } catch {
       return defaults;
@@ -987,7 +1074,7 @@
       pttSignal: settingPttSignal.value,
       pttActiveHigh: settingPttLevel.value === 'high',
       txMode: settingTxMode.value,
-      ack: settingAck.checked,
+      dest: getDest(),
       callsign: myCallsign(),
       pttLeadMs: clampMs(settingPttLead.value, 100),
       pttTailMs: clampMs(settingPttTail.value, 150),
@@ -995,7 +1082,7 @@
       stationPos: settingStationPos.value.trim(),
       contactFreq: settingContactFreq.value.trim(),
       medevacPeace: loadSettings().medevacPeace,
-      v: 2,
+      v: 3,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
     modem.updateSettings({ ...settings, volume: settings.volume / 100 });
@@ -1211,6 +1298,8 @@
         localStorage.setItem('sonochat-settings', JSON.stringify(s));
       },
       send: sendFormatted,
+      getDest,
+      knownStations,
       isNative,
       share: nativeShare,
     });

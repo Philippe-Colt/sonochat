@@ -168,7 +168,8 @@ class SonoLink {
    * @param {function(): number} [io.now]  horloge en ms
    * @param {function(function, number): any} [io.setTimer]
    * @param {function(any): void} [io.clearTimer]
-   * @param {function(string=): boolean} [io.ackEnabled]  réglage « Accusés » local (texte reçu, s'il y en a un)
+   * @param {function(string): boolean} [io.ackEnabled]  accuser ce texte reçu ? (l'application :
+   *        seulement s'il nous est adressé)
    * @param {function(): string} [io.callsign]  indicatif court (2 car.) placé dans nos accusés
    */
   constructor(io) {
@@ -215,8 +216,11 @@ class SonoLink {
 
   /**
    * Envoie un message. Résout avec {status: 'confirmed'|'sent'|'failed'|'mismatch'|'cancelled', ...}.
+   * @param {object} [opts]
+   * @param {boolean} [opts.ack]  attendre un accusé
+   * @param {string} [opts.from]  indicatif du destinataire : seuls ses accusés comptent
    */
-  async send(text, mode, { ack = true } = {}) {
+  async send(text, mode, { ack = true, from = '' } = {}) {
     if (this._sending) throw new Error('Envoi deja en cours');
     this._sending = true;
     this._cancelled = false;
@@ -224,8 +228,8 @@ class SonoLink {
     try {
       await this._waitRxQuiet();
       if (this._cancelled) return this._result(id, { status: 'cancelled' });
-      if (mode === FT8.MODE_MULTI_FRAME) return await this._sendMulti(id, text, ack);
-      return await this._sendText(id, text, mode, ack);
+      if (mode === FT8.MODE_MULTI_FRAME) return await this._sendMulti(id, text, ack, from);
+      return await this._sendText(id, text, mode, ack, from);
     } finally {
       this._sending = false;
     }
@@ -238,7 +242,7 @@ class SonoLink {
     if (this._waiter) this._waiter.finish(null);
   }
 
-  async _sendMulti(id, text, ack) {
+  async _sendMulti(id, text, ack, from) {
     const chunks = splitChunks(text);
     const total = chunks.length;
     if (total > LINK.MAX_FRAMES) throw new Error('message trop long');
@@ -265,7 +269,8 @@ class SonoLink {
 
         this._emitTx({ id, state: 'waitAck', seq, total, attempt });
         const ev = await this._waitFor(
-          (e) => (e.type === 'ack' && e.sub === 'frame' || e.type === 'rpt') && e.msgId === msgId && e.seq === seq,
+          (e) => (e.type === 'ack' && e.sub === 'frame' && (!from || e.call === from) || e.type === 'rpt')
+            && e.msgId === msgId && e.seq === seq,
           LINK.ACK_TIMEOUT);
         if (this._cancelled) return this._result(id, { status: 'cancelled', seq, total });
 
@@ -283,7 +288,7 @@ class SonoLink {
     return this._result(id, { status: 'failed' }); // inatteignable
   }
 
-  async _sendText(id, text, mode, ack) {
+  async _sendText(id, text, mode, ack, from) {
     const ext = mode === FT8.MODE_EXTENDED && text.length > 13;
     const frame = { kind: ext ? 'ext' : 'text', text };
     if (!ack) {
@@ -300,7 +305,7 @@ class SonoLink {
       if (r.aborted || this._cancelled) return this._result(id, { status: 'cancelled' });
 
       this._emitTx({ id, state: 'waitAck', seq: 0, total: 1, attempt });
-      const ev = await this._waitFor((e) => e.type === 'ack' && e.sub === 'text',
+      const ev = await this._waitFor((e) => e.type === 'ack' && e.sub === 'text' && (!from || e.call === from),
         ext ? LINK.ACK_TIMEOUT_EXT : LINK.ACK_TIMEOUT);
       if (this._cancelled) return this._result(id, { status: 'cancelled' });
       if (ev && ev.hash === hash) return this._result(id, { status: 'confirmed', by: ev.call });
@@ -386,10 +391,10 @@ class SonoLink {
 
   /** Synchro forte sans décodage (FT8Modem.onUndecoded) : demander la répétition. */
   handleUndecoded() {
-    if (!this.ackEnabled()) return;
     const now = this.now();
     for (const [msgId, s] of this._rxMulti) {
       if (s.done || !s.ackReq || now - s.lastAckAt > LINK.RX_RPT_WINDOW * 1000) continue;
+      if (!this.ackEnabled(this._assembleChunks(s.chunks))) continue; // pas pour nous
       if (s.rptSent.has(s.expectSeq)) continue;
       s.rptSent.add(s.expectSeq);
       this.log('TX RPT ' + msgId + '/' + s.expectSeq);
@@ -421,7 +426,7 @@ class SonoLink {
     const text = this._assembleChunks(s.chunks);
     if (complete) s.done = true;
 
-    const willAck = d.ackReq && this.ackEnabled();
+    const willAck = d.ackReq && this.ackEnabled(text);
     if (isNew || willAck) {
       this._emitRx({ id: s.rxId, text, done: complete, complete, frames: received, total: s.total, ackSent: willAck });
     }

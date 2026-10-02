@@ -246,6 +246,7 @@ header h1 .h1-sub {
 
 #msg-input {
   flex: 1;
+  min-width: 0; /* sinon la largeur par defaut du champ fait deborder la ligne */
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 24px;
@@ -265,6 +266,7 @@ header h1 .h1-sub {
 }
 
 #char-count {
+  flex-shrink: 0;
   font-size: 0.7rem;
   color: var(--text-muted);
   min-width: 32px;
@@ -519,6 +521,8 @@ header h1 .h1-sub {
   font-weight: 600;
   min-width: 45px;
 }
+
+.tx-duration-hint:empty { display: none; }
 
 .cancel-btn {
   color: var(--danger);
@@ -787,42 +791,33 @@ header h1 .h1-sub {
   letter-spacing: 0;
 }
 
-#tx-bar select {
-  flex: 1;
-  min-width: 0;
-  background: var(--input-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 8px;
-  color: var(--text-primary);
-  font-size: 0.85rem;
-  outline: none;
-}
-
-#tx-bar select:focus {
-  border-color: var(--accent);
-}
-
-.ack-toggle {
+/* Formule radio « FM 01 TO 02 » : de mon indicatif vers le destinataire */
+.fmto {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
 }
 
-.ack-toggle input {
-  width: 17px;
-  height: 17px;
-  accent-color: var(--accent);
-}
+.dest-badge { color: var(--text-primary); border-color: var(--text-secondary); }
+.dest-badge.broadcast { color: var(--text-secondary); border-style: dashed; background: transparent; }
 
-.ack-toggle:has(input:checked) {
-  color: var(--text-primary);
+#tx-bar .medevac-btn { margin-left: auto; }
+
+/* En-tete des bulles : FM PC TO XY, et la precision (en l'air, autre station) */
+.message .msg-call .fmto { font-size: 0.65rem; margin: 0 1px; }
+.message .msg-call .to-me { color: var(--success); }
+.message .msg-call .to-all { color: var(--text-secondary); }
+.msg-to-tag {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-secondary);
 }
+.message.not-for-me { opacity: 0.75; }
 
 /* PTT : delais, choix de l'interface USB (application), lien APK */
 .ptt-delays {
@@ -1106,6 +1101,9 @@ header h1 .h1-sub {
   font-size: 0.85rem;
   cursor: pointer;
 }
+
+.mv-overlay.mv-picker { z-index: 950; }
+.mv-fmto { font-weight: 800; letter-spacing: 0.06em; color: var(--text-secondary); }
 
 /* Plein ecran : lisible a bout de bras */
 .mv-viewer { background: #000; color: #fff; }

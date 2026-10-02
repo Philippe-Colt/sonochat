@@ -57,7 +57,9 @@ function makeStation(sim, name, opts = {}) {
         const fStart = t;
         st.sent.push({ f, start: fStart, end: fStart + len });
         if (o.onProgress) sim.setTimer(() => o.onProgress(i + 1, frames.length), (fStart - sim.t) * 1000);
-        sim.setTimer(() => { if (!aborted) st.peer.receive(st, f, fStart, fStart + len); }, (fStart - sim.t) * 1000);
+        sim.setTimer(() => {
+          if (!aborted) (st.peers || [st.peer]).forEach((p) => p.receive(st, f, fStart, fStart + len));
+        }, (fStart - sim.t) * 1000);
         t = fStart + len + (i < frames.length - 1 ? FT8.MULTI_FRAME_GAP : 0);
       });
       st.tx.push({ start, end: t });
@@ -128,9 +130,21 @@ function pair(opts = {}) {
   return { sim, A, B };
 }
 
-async function exchange(sim, A, text, mode, ack = true) {
+/** Trois stations qui s'entendent toutes ; chacune n'accuse que les messages qui lui sont adressés. */
+function trio() {
+  const sim = makeSim();
+  const A = makeStation(sim, 'A', { call: 'PA' }), B = makeStation(sim, 'B', { call: 'BB' }), C = makeStation(sim, 'C', { call: 'CC' });
+  A.peers = [B, C]; B.peers = [A, C]; C.peers = [A, B];
+  for (const st of [A, B, C]) {
+    const me = { A: 'PA', B: 'BB', C: 'CC' }[st.name];
+    st.ackEnabled = (text) => typeof text === 'string' && text.slice(2, 4) === me; // en-tête émetteur + destinataire
+  }
+  return { sim, A, B, C };
+}
+
+async function exchange(sim, A, text, mode, ack = true, from = '') {
   let result = null;
-  A.link.send(text, mode, { ack }).then((r) => { result = r; });
+  A.link.send(text, mode, { ack, from }).then((r) => { result = r; });
   await sim.runUntil(() => result !== null);
   // laisser passer les éventuels accusés et minuteurs restants
   await sim.runUntil(() => false, sim.t + 120);
@@ -293,20 +307,19 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
   }
 
   {
-    // Message formaté (9-line) : l'application accuse même case décochée (app.js, isFormattedOnAir)
+    // 9-line adressé (en-tête PC→XY, 26 car. = 2 blocs) puis collationnement XY→PC
     const M = require('../medevac.js');
     const nine = M.encode({ nine: { lat: 48.85, lon: 2.29, counts: [1, 0, 0, 0, 0], litter: 1, security: 0, marking: 2, nation: [3] } });
-    const { sim, A, B } = pair({ b: { ack: false } });
-    B.ackEnabled = (text) => typeof text === 'string' && text.slice(2, 4) === '/9';
-    const r = await exchange(sim, A, 'PC' + nine, 'extended');
-    check('9-line étendu : accusé malgré la case décochée', r.status === 'confirmed', JSON.stringify(r));
-    check('9-line : texte reçu intact', doneMsgs(B).some((m) => m.text === 'PC' + nine), doneMsgs(B).map((m) => m.text).join(' | '));
-    const r2 = await exchange(sim, A, 'PCBONJOUR', 'standard');
-    check('texte normal : toujours pas d\'accusé', r2.status === 'failed');
-    // Collationnement (?9) renvoyé par B : A l'accuse même case décochée
-    A.ackEnabled = (text) => typeof text === 'string' && /^[/?][9M]/.test(text.slice(2));
-    const r3 = await exchange(sim, B, 'XY?' + nine.slice(1), 'extended');
-    check('collationnement ?9 : accusé par l\'émetteur', r3.status === 'confirmed', JSON.stringify(r3));
+    const { sim, A, B } = pair({ a: { call: 'PC' }, b: { call: 'XY' } });
+    A.ackEnabled = (text) => typeof text === 'string' && text.slice(2, 4) === 'PC';
+    B.ackEnabled = (text) => typeof text === 'string' && text.slice(2, 4) === 'XY';
+    const r = await exchange(sim, A, 'PCXY' + nine, 'extended', true, 'XY');
+    check('9-line adressé : 26 car., confirmé par XY', ('PCXY' + nine).length === 26 && r.status === 'confirmed' && r.by === 'XY', JSON.stringify(r));
+    check('9-line : texte reçu intact', doneMsgs(B).some((m) => m.text === 'PCXY' + nine), doneMsgs(B).map((m) => m.text).join(' | '));
+    const r2 = await exchange(sim, A, 'PC99BONJOUR', 'standard', false);
+    check('message en l\'air : pas d\'accusé', r2.status === 'sent' && B.sent.filter((x) => isAck(x.f)).length === 1, JSON.stringify(r2));
+    const r3 = await exchange(sim, B, 'XYPC?' + nine.slice(1), 'extended', true, 'PC');
+    check('collationnement ?9 adressé à PC : accusé par PC', r3.status === 'confirmed' && r3.by === 'PC', JSON.stringify(r3));
   }
 
   console.log('Indicatif de la station qui accuse');
@@ -314,6 +327,40 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     const { sim, A } = pair({ b: { call: 'K7' } });
     const r = await exchange(sim, A, text, mode);
     check(mode + ' : confirmé par K7', r.status === 'confirmed' && r.by === 'K7', JSON.stringify(r));
+  }
+
+  console.log('Destinataire (3 stations)');
+  for (const [text, mode] of [['PACCHELLO', 'standard'], ['PACC' + LONG, 'multi-frame'], ['PACC' + EXT, 'extended']]) {
+    const { sim, A, B, C } = trio();
+    const r = await exchange(sim, A, text, mode, true, 'CC');
+    check(mode + ' vers CC : confirmé par CC', r.status === 'confirmed' && r.by === 'CC', JSON.stringify(r));
+    check(mode + ' vers CC : BB reçoit mais ne répond pas', B.sent.length === 0 && doneMsgs(B).some((m) => m.text === text),
+      B.sent.length + ' émission(s), ' + doneMsgs(B).map((m) => m.text).join(' | '));
+    check(mode + ' vers CC : CC a reçu', doneMsgs(C).some((m) => m.text === text));
+  }
+  {
+    const { sim, A, B, C } = trio();
+    const r = await exchange(sim, A, 'PA99' + EXT, 'extended', false);
+    check('message en l\'air (99) : envoyé, personne ne répond', r.status === 'sent' && B.sent.length === 0 && C.sent.length === 0, JSON.stringify(r));
+    check('message en l\'air : reçu par BB et CC', doneMsgs(B).length === 1 && doneMsgs(C).length === 1);
+  }
+  {
+    // BB accuse tout (station mal réglée), CC absente : l'accusé de BB ne vaut pas celui de CC
+    const { sim, A, B, C } = trio();
+    B.ackEnabled = true;
+    C.ackEnabled = false;
+    const r = await exchange(sim, A, 'PACCHELLO', 'standard', true, 'CC');
+    check('accusé d\'une autre station ignoré', r.status !== 'confirmed', JSON.stringify(r));
+  }
+  {
+    // Trame multi-trame perdue chez CC : seule CC demande la répétition (RPT)
+    const { sim, A, B, C } = trio();
+    let lost = false;
+    A.drop = (d) => d.type === 'data' && d.seq === 1 && !lost && (lost = true);
+    A.dropUndecoded = true;
+    const r = await exchange(sim, A, 'PACC' + LONG, 'multi-frame', true, 'CC');
+    check('multi-trame adressé, trame perdue : confirmé par CC', r.status === 'confirmed' && r.by === 'CC', JSON.stringify(r));
+    check('BB n\'envoie ni accusé ni RPT', B.sent.length === 0, B.sent.length + ' émission(s)');
   }
 
   console.log('Enchaînement');

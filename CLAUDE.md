@@ -36,16 +36,23 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 - Texte libre : jusqu'à 13 caractères, alphabet base-42 (i3=0, n3=0)
 - Télémétrie (i3=0, n3=5) : 71 bits libres, conteneur des trames du protocole SonoLink
 
-## Indicatif et annuaire
+## Indicatif, destinataire et annuaire
 
-- Page de chat (barre au-dessus de la saisie) : son indicatif (touché → paramètres), le mode
-  de transmission et la case « Accusés ». Les autres réglages restent dans les paramètres.
-- Chaque station règle un **indicatif court de 2 caractères** (`A-Z0-9`), obligatoire pour
-  émettre. Sur l'air, il est **en tête de chaque message, sans séparateur** :
-  `PC` + `BONJOUR` → `PCBONJOUR`, dans les 3 modes. Il reste donc 11 car. utiles en standard,
-  128 en multi-trame et en étendu. `app.js` ajoute le préfixe (`sendMessage`) et le retire
-  (`splitCallsign`) ; SonoLink transporte le texte tel quel, empreinte comprise.
-- Trame 1 d'un multi-trame perdue (`…` en tête) → indicatif affiché `?`.
+- Page de chat (barre au-dessus de la saisie) : formule radio **`FM 01 TO 02`** — mon indicatif
+  (touché → paramètres), puis le **destinataire** (touché → sélecteur à gros boutons : `99 · TOUS`,
+  stations connues — historique et annuaire —, saisie libre). Bouton MEDEVAC. Le **mode de
+  transmission est dans les paramètres** (étendu par défaut).
+- Chaque station règle un **indicatif court de 2 caractères** (`A-Z0-9`, `99` interdit),
+  obligatoire pour émettre. Sur l'air, **en-tête de 4 car. sans séparateur** :
+  émetteur + destinataire + texte : `PC` → `XY` : `PCXYBONJOUR` ; en l'air : `PC99BONJOUR`.
+  Restent **9 car.** utiles en standard, **126** en multi-trame et en étendu. `app.js` ajoute
+  l'en-tête (`sendText`) et le lit (`splitHeader` → `{call, to, body}`) ; SonoLink transporte le
+  texte tel quel, empreinte comprise.
+- Destinataire enregistré (`settings.dest`, réglages `v: 3`) ; aucun au premier lancement : le
+  premier envoi ouvre le sélecteur.
+- Bulles : `FM PC TO XY` ; « TO moi » ; `99` → « Message en l'air · pour tous » ; message pour une
+  autre station → « pour XY · pas de réponse » (reçu et affiché, atténué, jamais de réponse).
+- Trame 1 d'un multi-trame perdue (`…` en tête) → émetteur et destinataire `?`.
 - Les accusés portent l'indicatif court de la station qui accuse (11 bits) → « ✓✓ reçu par XY ».
 - **Annuaire** (paramètres → Importer) : fichier texte/CSV, `court;long` par ligne (`;` `,`
   tabulation ou espaces, `#` commentaire, en-tête toléré, dernier doublon gagnant). Il est
@@ -56,10 +63,14 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 
 ## Accusés de réception (SonoLink, `arq.js`)
 
-Case « Accusés » sur la page de chat (**décochée par défaut** ; décochée = diffusion sans accusé,
-pour plusieurs récepteurs). Les deux stations doivent la cocher : un récepteur n'accuse que si
-sa propre case est cochée. Réglages enregistrés en `v: 2` : ceux de la v1 (sans `v`) repassent
-les accusés à décoché. Un seul correspondant à la fois : plusieurs récepteurs accuseraient en même temps.
+**Seul le destinataire accuse, et toujours** ; `99` = message en l'air, aucun accusé attendu ni
+envoyé. Plus de case « Accusés ».
+- Réception : `ackEnabled(text)` reçoit le texte (étendu/standard : message ; multi-trame :
+  texte assemblé ; RPT : texte de la session) ; l'application accuse ⇔ destinataire = mon
+  indicatif (`isForMe`) et écoute active. Une station non destinataire ne répond jamais.
+- Émission : `link.send(text, mode, { ack, from })`, `ack = destinataire ≠ 99`, `from` =
+  destinataire : un accusé (texte ou trame) d'une autre station est ignoré.
+- Plusieurs stations peuvent écouter : seul le destinataire répond (testé à 3 stations).
 
 | Mode | Trames | Accusé | Répétition (3 max) |
 |---|---|---|---|
@@ -88,29 +99,34 @@ RPT       : type=2 (2) | msgId (5) | seq (4)
 Bouton **MEDEVAC** (barre au-dessus de la saisie) → 9-line ou MIST seul, un écran par ligne,
 gros boutons, passage automatique après un choix unique, récapitulatif décodé avant envoi.
 
-Format sur l'air (après l'indicatif) — **à ne jamais réordonner**, seulement étendre :
+Format sur l'air (après l'en-tête de 4 car.) — **à ne jamais réordonner**, seulement étendre :
 ```
-/9 + 22 car.                  9-line (lignes 1 à 9)            → 26 car. = 2 blocs étendus
+/9 + 20 car.                  9-line (lignes 1 à 9)            → 26 car. = 2 blocs étendus
 /M + n + n × 11 car.          MIST, n blessés (1-11, 9 après un 9-line)
 ? au lieu du premier /        collationnement du message reçu
 puis remarque libre facultative (≤ 128 car. au total)
 ```
 - Chaque bloc de champs = un entier en base mixte (`NINE_RADIX`, `MIST_RADIX`), écrit en
   **base 41 = alphabet FT8 sans l'espace** (FT8 rogne les espaces en fin de bloc). Champ `version`
-  (0) en tête pour faire évoluer le format.
+  en tête (9-line : 1, MIST : 0).
+- 9-line resserré à 20 car. pour tenir en 2 blocs avec l'en-tête de 4 : **ligne 5 = couchés**
+  seulement, assis = total ligne 3 − couchés ; **fréquence** au kHz jusqu'à 30 MHz, au pas de
+  5 kHz au-delà (`roundFreq`) ; **lignes 6 et 9 + guerre/paix en un seul rang** (guerre :
+  sécurité × NRBC ; paix : blessures × terrain, 6 choix chacun).
 - Ligne 1 : 1e-4° (~10 m, comme un MGRS 8 chiffres), GPS du téléphone ou position de la station
   (paramètres, MGRS ou degrés). Ligne 2 : fréquence de contact (paramètres) + indicatif de
   l'émetteur. Lignes 6 et 9 : variante guerre (sécurité, NRBC) ou paix (blessures, terrain).
-- Toujours en **étendu, accusé forcé** : `ackEnabled(text)` (arq.js passe le texte reçu) accuse
-  un message `/9` ou `/M` même case « Accusés » décochée. Puis le récepteur **renvoie** le message
-  avec `?` (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur
-  compare (`checkReadback`) → « Collationné conforme par XY » ou les lignes qui diffèrent (`msg.readback`).
-  Le collationnement part lui aussi avec accusé (forcé chez l'émetteur) : le récepteur voit
-  « ✓✓ reçu par PC » sur son collationnement.
-- **Alerte** : dès qu'un message reçu commence par `/9` (premier bloc, avant la fin), la station
-  passe en alerte (`enterMedevacAlert`) : fond rouge (`body.alert-9line`), bandeau, vibration,
-  mode **étendu** et case **Accusés** cochée (enregistrés). « Fin d'alerte » remet le mode et les
-  accusés d'avant. Survit au rechargement (`localStorage` `chatmtx-medevac-alert`).
+- Toujours en **étendu**, vers un **destinataire précis** (jamais `99`, choisi en tête de la
+  saisie). Le destinataire accuse, puis **renvoie** le message avec `?`, adressé à l'émetteur
+  (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur compare
+  (`checkReadback`) → « Collationné conforme par XY » ou les lignes qui diffèrent (`msg.readback`),
+  et accuse le collationnement (« ✓✓ reçu par PC » chez le destinataire). Les stations non
+  destinataires affichent le 9-line sans rien faire.
+- **Alerte** (destinataire seulement) : dès qu'un message reçu **pour moi** commence par `/9`
+  (premier bloc, avant la fin), alerte (`enterMedevacAlert`) : fond rouge (`body.alert-9line`),
+  bandeau, vibration, mode **étendu** et destinataire = l'émetteur du 9-line (enregistrés).
+  « Fin d'alerte » remet le mode et le destinataire d'avant. Survit au rechargement
+  (`localStorage` `chatmtx-medevac-alert`).
 - Message abîmé (bloc perdu) ou non décodable → affiché en texte simple.
 - Plein écran (noir, écran maintenu allumé), Partager (plugin `@capacitor/share` dans l'appli,
   Web Share sinon, presse-papiers en dernier recours), QR code du texte en clair, Imprimer

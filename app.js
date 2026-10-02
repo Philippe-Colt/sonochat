@@ -36,6 +36,9 @@
   const serialIndicator = document.getElementById('serial-indicator');
   const settingPttSignal = document.getElementById('setting-ptt-signal');
   const settingPttLevel = document.getElementById('setting-ptt-level');
+  const settingPttLead = document.getElementById('setting-ptt-lead');
+  const settingPttTail = document.getElementById('setting-ptt-tail');
+  const settingVoxTone = document.getElementById('setting-vox-tone');
   const settingAck = document.getElementById('setting-ack');
   const settingCallsign = document.getElementById('setting-callsign');
   const myCallEl = document.getElementById('my-call');
@@ -43,6 +46,10 @@
   const btnDirectoryClear = document.getElementById('btn-directory-clear');
   const directoryFile = document.getElementById('directory-file');
   const directoryStatus = document.getElementById('directory-status');
+
+  // Application Android (Capacitor) : PTT par port serie USB natif, fichiers dans l'APK
+  const usbSerial = nativeUsbSerial();
+  const isNative = !!usbSerial;
 
   // === State ===
   let modem = null;
@@ -60,6 +67,7 @@
     initModem();
     initUI();
     registerServiceWorker();
+    checkApkUpdate();
     resizeCanvas();
   }
 
@@ -69,6 +77,7 @@
       baseFreq: settings.baseFreq,
       volume: settings.volume / 100,
     });
+    modem.updateSettings({ pttLeadMs: settings.pttLeadMs, pttTailMs: settings.pttTailMs, voxTone: settings.voxTone });
 
     link = new SonoLink({
       transmit: (frames, opts) => modem.transmitSymbols(frames.map(frameToSymbols), opts),
@@ -308,7 +317,23 @@
     });
 
     // Serial / PTT
-    if ('serial' in navigator) {
+    settingPttLead.addEventListener('change', saveAndApplySettings);
+    settingPttTail.addEventListener('change', saveAndApplySettings);
+    settingVoxTone.addEventListener('change', saveAndApplySettings);
+    // Raccourci APK en tete des parametres. Dans l'application, il sert a la
+    // mise a jour : l'URL est externe (https://localhost dans l'appli), Capacitor
+    // l'ouvre donc dans le navigateur du telephone, qui gere le telechargement.
+    const apkLink = document.getElementById('apk-link');
+    if (isNative) {
+      apkLink.removeAttribute('download'); // la WebView ne telecharge pas : on laisse Capacitor ouvrir le navigateur
+      document.getElementById('apk-link-label').textContent = 'Mettre a jour l\'application (APK)';
+      document.getElementById('apk-link-info').textContent = 'Telecharge la derniere version depuis sonochat.f4mtx.com, a installer par-dessus.';
+    }
+    apkLink.addEventListener('click', () => {
+      // Parametre unique : jamais une ancienne copie en cache (navigateur, Cloudflare)
+      apkLink.href = 'https://sonochat.f4mtx.com/sonochat.apk?t=' + Date.now();
+    });
+    if (isNative || 'serial' in navigator) {
       btnSerialConnect.addEventListener('click', connectSerial);
       settingPttSignal.addEventListener('change', saveAndApplySettings);
       settingPttLevel.addEventListener('change', saveAndApplySettings);
@@ -324,6 +349,9 @@
     settingBaseFreq.value = settings.baseFreq;
     settingPttSignal.value = settings.pttSignal || 'RTS';
     settingPttLevel.value = settings.pttActiveHigh !== false ? 'high' : 'low';
+    settingPttLead.value = settings.pttLeadMs;
+    settingPttTail.value = settings.pttTailMs;
+    settingVoxTone.checked = settings.voxTone === true;
     settingTxMode.value = settings.txMode || 'standard';
     settingAck.checked = settings.ack === true;
     settingCallsign.value = settings.callsign || '';
@@ -573,6 +601,12 @@
     const host = location.host;
     const browser = brave ? 'Brave' : 'le navigateur';
 
+    if (isNative) {
+      return [
+        'Ouvrez les <b>Parametres</b> Android &rarr; <b>Applications</b> &rarr; <b>SonoChat</b> &rarr; <b>Autorisations</b> &rarr; <b>Micro</b> &rarr; <b>Autoriser seulement si l\'appli est en cours d\'utilisation</b>.',
+        'Revenez dans SonoChat : l\'ecoute reprend toute seule, sinon fermez et rouvrez l\'application.'
+      ];
+    }
     if (android) {
       const steps = [];
       if (brave) {
@@ -735,7 +769,7 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '' };
+    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
@@ -748,6 +782,11 @@
     }
   }
 
+  function clampMs(v, dflt) {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1000, n)) : dflt;
+  }
+
   function saveAndApplySettings() {
     const settings = {
       volume: parseInt(settingVolume.value),
@@ -757,6 +796,9 @@
       txMode: settingTxMode.value,
       ack: settingAck.checked,
       callsign: myCallsign(),
+      pttLeadMs: clampMs(settingPttLead.value, 100),
+      pttTailMs: clampMs(settingPttTail.value, 150),
+      voxTone: settingVoxTone.checked,
       v: 2,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
@@ -845,6 +887,11 @@
         return;
       }
 
+      if (isNative) {
+        await connectNativeSerial();
+        return;
+      }
+
       serialPort = await navigator.serial.requestPort();
       await serialPort.open({ baudRate: 9600 });
 
@@ -860,6 +907,71 @@
         console.error('Erreur port serie:', err);
       }
     }
+  }
+
+  // Application Android : port serie USB via le plugin natif UsbSerial
+  let usbDetachListener = null;
+
+  async function connectNativeSerial() {
+    let ports;
+    try {
+      ({ ports } = await usbSerial.list());
+    } catch (e) {
+      serialStatusEl.textContent = 'Erreur USB';
+      console.error('UsbSerial.list:', e);
+      return;
+    }
+    if (!ports.length) {
+      serialStatusEl.textContent = 'Aucune interface USB';
+      return;
+    }
+    const port = ports.length === 1 ? ports[0] : await chooseUsbPort(ports);
+    if (!port) return;
+    // Niveaux de repos (PTT relache) transmis au natif : il y revient seul au
+    // debranchement, a la fermeture de l'appli ou si le PTT reste ferme trop longtemps
+    const idle = !modem.pttActiveHigh;
+    const useDtr = modem.pttSignal === 'DTR';
+    try {
+      await usbSerial.open({ deviceId: port.deviceId, rts: useDtr ? false : idle, dtr: useDtr ? idle : false });
+    } catch (e) {
+      serialStatusEl.textContent = /permission/i.test(e && e.message) ? 'Autorisation USB refusee' : 'Ouverture impossible';
+      console.error('UsbSerial.open:', e);
+      return;
+    }
+    serialPort = new NativePttPort(usbSerial, port);
+    modem.serialPort = serialPort;
+    await modem._pttOff();
+    updateSerialUI(true, port.name);
+    if (!usbDetachListener) {
+      usbDetachListener = await usbSerial.addListener('detached', () => {
+        if (serialPort instanceof NativePttPort) handleSerialDisconnect();
+      });
+      await usbSerial.addListener('watchdog', () => {
+        console.warn('PTT relache par securite (emission trop longue)');
+        serialStatusEl.textContent = 'PTT relache par securite';
+      });
+    }
+  }
+
+  /** Plusieurs interfaces branchees : choix dans le panneau Parametres. */
+  function chooseUsbPort(ports) {
+    return new Promise((resolve) => {
+      const list = document.createElement('div');
+      list.className = 'usb-port-list';
+      ports.forEach((p) => {
+        const b = document.createElement('button');
+        b.className = 'serial-btn';
+        b.textContent = p.name;
+        b.addEventListener('click', () => { list.remove(); resolve(p); });
+        list.appendChild(b);
+      });
+      const cancel = document.createElement('button');
+      cancel.className = 'serial-btn';
+      cancel.textContent = 'Annuler';
+      cancel.addEventListener('click', () => { list.remove(); resolve(null); });
+      list.appendChild(cancel);
+      btnSerialConnect.parentElement.after(list);
+    });
   }
 
   async function disconnectSerial() {
@@ -879,10 +991,10 @@
     updateSerialUI(false);
   }
 
-  function updateSerialUI(connected) {
+  function updateSerialUI(connected, name) {
     btnSerialConnect.textContent = connected ? 'Deconnecter' : 'Connecter';
     btnSerialConnect.classList.toggle('connected', connected);
-    serialStatusEl.textContent = connected ? 'Connecte' : 'Deconnecte';
+    serialStatusEl.textContent = connected ? 'Connecte' + (name ? ' (' + name + ')' : '') : 'Deconnecte';
     serialStatusEl.classList.toggle('connected', connected);
     serialIndicator.classList.toggle('hidden', !connected);
     serialIndicator.classList.toggle('connected', connected);
@@ -890,6 +1002,7 @@
 
   // === Service Worker ===
   function registerServiceWorker() {
+    if (isNative) return; // application : les fichiers sont dans l'APK
     if ('serviceWorker' in navigator) {
       // Une nouvelle version prend le controle : on recharge pour l'utiliser,
       // sauf en pleine emission/ecoute (elle s'appliquera au prochain lancement).
@@ -904,6 +1017,72 @@
         .catch(err => console.warn('SW erreur:', err));
     }
   }
+
+  // === Mise a jour obligatoire de l'application ===
+  // L'APK embarque ses fichiers : un deploiement du site ne la met pas a jour.
+  // On compare la version embarquee (app-version.json, ecrit par bundle-web.mjs)
+  // a celle publiee par deploy.sh (apk-version.json, CORS ouvert par Caddy).
+  // Plus recente en ligne : ecran bloquant jusqu'a l'installation. Hors ligne
+  // ou serveur muet : on laisse passer.
+  const APK_URL = 'https://sonochat.f4mtx.com/sonochat.apk';
+  const APK_VERSION_URL = 'https://sonochat.f4mtx.com/apk-version.json';
+  const APK_CHECK_INTERVAL_MS = 3600 * 1000;
+  let apkCheckedAt = 0;
+
+  function compareVersions(a, b) {
+    const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return Math.sign(d);
+    }
+    return 0;
+  }
+
+  async function checkApkUpdate() {
+    if (!isNative || document.getElementById('update-gate')) return;
+    apkCheckedAt = Date.now();
+    try {
+      const local = (await (await fetch('app-version.json')).json()).version;
+      const res = await fetch(APK_VERSION_URL + '?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return;
+      const remote = (await res.json()).version;
+      if (!local || !remote || compareVersions(remote, local) <= 0) return;
+      // Pas en pleine emission ou reception : on reessaie un peu plus tard
+      if (modem && (modem.transmitting || (link && link.busy))) {
+        setTimeout(checkApkUpdate, 30000);
+        return;
+      }
+      showUpdateGate(local, remote);
+    } catch (e) {
+      console.log('[MAJ] verification impossible : ' + e.message);
+    }
+  }
+
+  function showUpdateGate(local, remote) {
+    if (modem && modem.listening) modem.stopListening();
+    const el = document.createElement('div');
+    el.className = 'update-gate';
+    el.id = 'update-gate';
+    el.setAttribute('role', 'alertdialog');
+    el.setAttribute('aria-labelledby', 'update-gate-title');
+    el.innerHTML = `
+      <div class="update-gate-box">
+        <p class="update-gate-title" id="update-gate-title">Mise a jour obligatoire</p>
+        <p>Une nouvelle version de SonoChat est disponible : <b>${escapeHtml(remote)}</b> (installee : ${escapeHtml(local)}).</p>
+        <p>Telechargez-la puis installez-la par-dessus l'application actuelle. Vos messages et reglages sont conserves.</p>
+        <a class="update-gate-btn" href="${APK_URL}">Telecharger la mise a jour</a>
+      </div>
+    `;
+    // Lien externe : Capacitor l'ouvre dans le navigateur, qui telecharge l'APK
+    el.querySelector('a').addEventListener('click', (e) => {
+      e.currentTarget.href = APK_URL + '?t=' + Date.now();
+    });
+    document.body.appendChild(el);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - apkCheckedAt > APK_CHECK_INTERVAL_MS) checkApkUpdate();
+  });
 
   // === Start ===
   if (document.readyState === 'loading') {

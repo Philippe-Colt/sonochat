@@ -1,0 +1,19 @@
+{
+  "name": "sonochat-mobile",
+  "version": "1.1.0",
+  "private": true,
+  "description": "SonoChat en application Android (Capacitor) : PTT par port serie USB natif",
+  "scripts": {
+    "bundle": "node scripts/bundle-web.mjs",
+    "sync": "npm run bundle && cap sync android",
+    "build:apk": "scripts/build-apk.sh",
+    "open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/core": "^8.4.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

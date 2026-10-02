@@ -40,6 +40,12 @@ const FT8 = {
   MULTI_FRAME_MAX_CHUNKS: 16,
   MULTI_FRAME_GAP: 0.5,          // seconds between frames
 
+  // PTT par tonalite (cable VOX type Digirig) : tonalite continue sur le canal
+  // droit, detectee par le cable qui met le PTT a la masse ; FT8 sur le gauche.
+  // Plus aigue = detection plus rapide.
+  VOX_TONE_HZ: 2000,
+  VOX_TONE_LEVEL: 0.8,
+
   // Telemetrie FT8 (i3=0, n3=5) : 71 bits libres, conteneur des trames du protocole
   N3_TELEMETRY: 5,
 
@@ -261,6 +267,13 @@ class FT8Modem {
     this.serialPort = null;
     this.pttSignal = 'RTS';       // 'RTS' or 'DTR'
     this.pttActiveHigh = true;    // true = assert high for TX
+    // Le relais du poste met quelques dizaines de ms a commuter, et la sortie
+    // audio a sa propre latence : sans marge, le debut ou la fin de la trame
+    // partirait PTT relache.
+    this.pttLeadMs = 100;         // PTT ferme -> debut du son
+    this.pttTailMs = 150;         // fin du son -> PTT relache
+    this.voxTone = false;         // PTT par tonalite sur le canal droit
+    this._vox = null;             // {merger, osc, gain} pendant l'emission
 
     // Callbacks
     this.onFrame = null;      // ({text, telemetry, ext, blocks, absPos, absEnd, score})
@@ -830,7 +843,9 @@ class FT8Modem {
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(ctx.destination);
+    // Tonalite VOX active : FT8 sur le canal gauche seul
+    if (this._vox) source.connect(this._vox.merger, 0, 0);
+    else source.connect(ctx.destination);
     this._txSource = source;
 
     return new Promise((resolve) => {
@@ -844,6 +859,7 @@ class FT8Modem {
 
   /** Internal: end transmission (PTT off, state reset). */
   async _endTransmit() {
+    this._voxStop();
     await this._pttOff();
     // Le micro entend encore la fin de l'emission (latence de sortie) : on
     // prolonge le silence du ring buffer pour ne jamais se decoder soi-meme.
@@ -870,8 +886,12 @@ class FT8Modem {
     const ctx = this._ensureAudioContext();
     const gap = opts.gap !== undefined ? opts.gap : FT8.MULTI_FRAME_GAP;
     let aborted = false;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     try {
       await this._pttOn();
+      if (this.voxTone) this._voxStart(ctx);
+      const keyed = !!(this.serialPort || this._vox);
+      if (keyed && this.pttLeadMs > 0) await sleep(this.pttLeadMs);
       for (let i = 0; i < symbolList.length; i++) {
         if (this._txAborted) break;
         if (opts.onProgress) opts.onProgress(i + 1, symbolList.length);
@@ -881,6 +901,8 @@ class FT8Modem {
           await new Promise(r => setTimeout(r, gap * 1000));
         }
       }
+      // Annulation : PTT relache tout de suite, sans maintien
+      if (keyed && this.pttTailMs > 0 && !this._txAborted) await sleep(this.pttTailMs);
     } finally {
       aborted = this._txAborted;
       await this._endTransmit();
@@ -1661,6 +1683,48 @@ class FT8Modem {
     if (settings.volume !== undefined) this.volume = settings.volume;
     if (settings.pttSignal !== undefined) this.pttSignal = settings.pttSignal;
     if (settings.pttActiveHigh !== undefined) this.pttActiveHigh = settings.pttActiveHigh;
+    if (settings.pttLeadMs !== undefined) this.pttLeadMs = settings.pttLeadMs;
+    if (settings.pttTailMs !== undefined) this.pttTailMs = settings.pttTailMs;
+    if (settings.voxTone !== undefined) this.voxTone = !!settings.voxTone;
+  }
+
+  // ============================================================
+  // PTT PAR TONALITE (VOX, canal droit)
+  // ============================================================
+
+  /**
+   * Demarre la tonalite VOX sur le canal droit, pour toute la duree de
+   * l'emission (avance, trames, intervalles, maintien). Sortie mono : la
+   * tonalite se melangerait au FT8, on n'emet alors que le FT8.
+   */
+  _voxStart(ctx) {
+    if (this._vox) return;
+    if (ctx.destination.maxChannelCount < 2) {
+      console.warn('[PTT] Sortie audio mono : tonalite VOX impossible');
+      return;
+    }
+    const merger = ctx.createChannelMerger(2);
+    merger.connect(ctx.destination);
+    const osc = ctx.createOscillator();
+    osc.frequency.value = FT8.VOX_TONE_HZ;
+    const gain = ctx.createGain();
+    gain.gain.value = FT8.VOX_TONE_LEVEL;
+    osc.connect(gain);
+    gain.connect(merger, 0, 1);
+    osc.start();
+    this._vox = { merger, osc, gain };
+    console.log('[PTT] tonalite VOX ON (' + FT8.VOX_TONE_HZ + ' Hz, canal droit)');
+  }
+
+  _voxStop() {
+    if (!this._vox) return;
+    const { merger, osc, gain } = this._vox;
+    this._vox = null;
+    try { osc.stop(); } catch (e) { /* deja arretee */ }
+    osc.disconnect();
+    gain.disconnect();
+    merger.disconnect();
+    console.log('[PTT] tonalite VOX OFF');
   }
 
   // ============================================================

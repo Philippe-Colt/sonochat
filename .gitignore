@@ -1,0 +1,7 @@
+# Application Android
+dist/
+mobile/node_modules/
+mobile/www/
+mobile/android/keystore.properties
+mobile/android/app/src/main/assets/public/
+*.jks

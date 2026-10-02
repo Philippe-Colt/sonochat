@@ -1,0 +1,8 @@
+{
+  "appId": "com.f4mtx.sonochat",
+  "appName": "SonoChat",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#1a1a2e"
+  }
+}

@@ -1,0 +1,15 @@
+# Fichiers servis par le site (deploy.sh) et embarques dans l'application Android
+# (mobile/scripts/bundle-web.mjs). Tout fichier ajoute ici doit aussi figurer dans
+# ASSETS de sw.js pour fonctionner hors ligne dans le navigateur.
+index.html
+style.css
+ft8-modem.js
+arq.js
+directory.js
+native-serial.js
+app.js
+sw.js
+manifest.json
+icon.svg
+icon-192.png
+icon-512.png

@@ -9,7 +9,11 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 - `arq.js` — `SonoLink` : accusés de réception et répétitions (voir plus bas). Sans DOM ni audio
   (émission, horloge, minuteurs injectés), testable en Node
 - `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long)
+- `native-serial.js` — Application Android : `NativePttPort`, même interface que le `SerialPort`
+  de Web Serial, au-dessus du plugin natif `UsbSerial`
 - `app.js` — Interface chat : relie modem ↔ SonoLink, bulles, indicatifs, spectre, historique localStorage
+- `web-files.txt` — Liste unique des fichiers servis (lue par `deploy.sh` et par le bundle de l'appli)
+- `mobile/` — Application Android (Capacitor 8), voir plus bas
 - `index.html` — Structure HTML de l'app
 - `style.css` — Styles (thème sombre)
 - `sw.js` — Service Worker pour PWA offline
@@ -119,6 +123,9 @@ node tests/arq.js
 # Import d'annuaire
 node tests/directory.js
 
+# Séquencement PTT (avance/maintien, annulation) et adaptateur natif
+node tests/ptt-timing.js
+
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
 node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
 ```
@@ -140,6 +147,54 @@ node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
   sauf en émission/écoute.
 - Cloudflare réécrit `Cache-Control` en `max-age=14400` sur .js/.png (réglage de zone
   « Browser Cache TTL ») ; sans effet sur les mises à jour, le SW contournant le cache HTTP.
+
+## Application Android (`mobile/`)
+
+Pourquoi : dans Chrome Android, Web Serial ne fonctionne qu'en Bluetooth, et le série USB filaire
+n'y est pas encore pris en charge. Le navigateur ne peut donc pas actionner RTS/DTR d'une
+interface USB-série (Digirig Mobile, poste à USB réglé « PTT par RTS »). L'application le fait
+par un plugin natif.
+
+```bash
+cd mobile && npm install           # une fois
+scripts/build-apk.sh               # www/ <- web-files.txt, cap sync, assembleRelease -> ../dist/sonochat.apk
+cd .. && ./deploy.sh               # publie aussi dist/sonochat.apk -> https://sonochat.f4mtx.com/sonochat.apk
+```
+
+- **Avant chaque publication**, incrémenter `version` dans `mobile/package.json` (le
+  `versionCode` en dérive : 1.2.3 → 10203). Sinon Android refuse la mise à jour.
+- **Mise à jour obligatoire** (depuis 1.1.0) : `bundle-web.mjs` embarque `app-version.json`,
+  `build-apk.sh` écrit `dist/apk-version.json`, `deploy.sh` le publie. Au lancement et au retour
+  au premier plan (au plus 1×/h), l'appli compare les deux (`checkApkUpdate`) : plus récente en
+  ligne → écran bloquant « Télécharger la mise à jour » (reporté de 30 s si émission en cours).
+  Hors ligne : rien. CORS ouvert sur `/apk-version.json` dans le Caddyfile (origine `https://localhost`).
+  Le site seul (`deploy.sh` sans nouvel APK) ne déclenche rien.
+- **Plugin** `mobile/android/app/src/main/java/com/f4mtx/sonochat/UsbSerialPlugin.java`
+  (bibliothèque `usb-serial-for-android`, JitPack) : `list`, `open({deviceId, rts, dtr})` (niveaux
+  **de repos**, PTT relâché), `setSignals({rts, dtr})`, `close`, événements `detached` et `watchdog`.
+  Lignes remises au repos au débranchement, à la destruction de l'activité, et si le PTT reste fermé
+  plus de 130 s (minuteur de sécurité : jamais de poste bloqué en émission).
+- Le JS ne change pas de chemin : `NativePttPort.setSignals({requestToSend, dataTerminalReady})`
+  est appelé par `FT8Modem._pttOn/_pttOff` comme un port Web Serial. En natif, pas de service
+  worker (fichiers dans l'APK) et l'aide micro renvoie aux autorisations Android.
+- Branchement d'une interface CP210x / FTDI / CH34x / PL2303 : Android propose d'ouvrir SonoChat
+  (`res/xml/usb_device_filter.xml`).
+- **Signature** : clé `~/.android-keys/sonochat-release.jks`, mots de passe dans
+  `mobile/android/keystore.properties` (gitignoré ; copie dans `~/.android-keys/`).
+  **Sauvegarde sur le NAS** : `/mnt/nas/nucbox-backup/android-keys/`. Perdre la clé = plus aucune
+  mise à jour possible par-dessus l'application installée (il faudrait la désinstaller).
+- Délais PTT (paramètres, web et appli) : `pttLeadMs` (100 ms, PTT fermé avant le son) et
+  `pttTailMs` (150 ms, gardé après), appliqués seulement avec un port série ou la tonalité VOX.
+  L'annulation relâche immédiatement.
+- **PTT par tonalité (VOX)** (case dans les paramètres, `voxTone`) : pour un câble VOX sur la prise
+  casque (Digirig VOX PTT, brochage CTIA). Pendant toute l'émission (avance, trames, intervalles,
+  maintien), un oscillateur `VOX_TONE_HZ` (2000 Hz) joue sur le canal **droit** et le FT8 passe sur
+  le **gauche** seul (`ChannelMerger`). Sortie mono (`maxChannelCount < 2`) : pas de tonalité, sinon
+  elle se mélangerait au FT8. Cumulable avec un port série. Sans appli native : marche aussi dans
+  Chrome Android et sur iOS.
+- iOS : pas d'accès au série USB pour une application ordinaire ; non prévu.
+- Test sur émulateur : AVD `sonochat-test` (Android 36, `-gpu swiftshader_indirect` pour ne pas
+  solliciter le GPU i915), `adb install -r dist/sonochat.apk`.
 
 ## Notes
 

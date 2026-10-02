@@ -8,6 +8,7 @@ const ASSETS = [
   './ft8-modem.js',
   './arq.js',
   './directory.js',
+  './native-serial.js',
   './app.js',
   './icon.svg',
   './icon-192.png',

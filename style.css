@@ -594,6 +594,47 @@ header h1 {
   border-color: var(--accent);
 }
 
+/* Mise a jour obligatoire de l'application Android */
+.update-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(10, 10, 25, 0.92);
+}
+
+.update-gate-box {
+  max-width: 420px;
+  padding: 20px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  display: grid;
+  gap: 10px;
+}
+
+.update-gate-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.update-gate-btn {
+  display: block;
+  margin-top: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+
 /* Accuses de reception (SonoLink) */
 .setting-group .checkbox-label {
   display: flex;
@@ -764,4 +805,46 @@ header h1 {
 
 .ack-toggle:has(input:checked) {
   color: var(--text-primary);
+}
+
+/* PTT : delais, choix de l'interface USB (application), lien APK */
+.ptt-delays {
+  display: flex;
+  gap: 16px;
+}
+
+.ptt-delays label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.setting-group .ptt-delays input[type="number"] {
+  width: 5.5em;
+}
+
+.usb-port-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.app-download .app-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+  margin-bottom: 8px;
+}
+
+.app-download .app-link:active {
+  background: var(--accent-dim);
 }

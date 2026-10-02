@@ -90,9 +90,16 @@
                 <button id="btn-close-settings" class="icon-btn">&times;</button>
             </div>
             <div class="panel-body">
+                <div class="setting-group app-download" id="android-app-group">
+                    <a class="app-link" id="apk-link" href="https://sonochat.f4mtx.com/sonochat.apk" download>
+                        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 3v12m0 0l-5-5m5 5l5-5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span id="apk-link-label">Telecharger l'application Android</span>
+                    </a>
+                    <p class="setting-info" id="apk-link-info">Necessaire pour commander le PTT par port serie USB (Digirig Mobile, poste USB) depuis un telephone.</p>
+                </div>
                 <div class="setting-group">
                     <label for="setting-callsign">Indicatif (2 caracteres)</label>
-                    <input type="text" id="setting-callsign" maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ex. PC">
+                    <input type="text" id="setting-callsign" maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PC">
                     <p class="setting-info">Envoye en tete de chaque message (obligatoire pour emettre). Lettres et chiffres.</p>
                 </div>
                 <div class="setting-group">
@@ -136,6 +143,21 @@
                     </select>
                 </div>
                 <div class="setting-group">
+                    <label>Delais PTT (ms)</label>
+                    <div class="ptt-delays">
+                        <label>Avance <input type="number" id="setting-ptt-lead" min="0" max="1000" step="10" value="100"></label>
+                        <label>Maintien <input type="number" id="setting-ptt-tail" min="0" max="1000" step="10" value="150"></label>
+                    </div>
+                    <p class="setting-info">Avance : PTT ferme avant le son (temps de commutation du poste). Maintien : PTT garde apres la fin du son (latence audio).</p>
+                </div>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="setting-vox-tone">
+                        PTT par tonalite (VOX)
+                    </label>
+                    <p class="setting-info">Pour un cable VOX (Digirig VOX PTT) sur la prise casque : tonalite de 2000 Hz sur le canal droit pendant toute l'emission, FT8 sur le canal gauche seul. Les delais ci-dessus s'appliquent ; prevoir 150 a 200 ms d'avance.</p>
+                </div>
+                <div class="setting-group">
                     <label>Protocole FT8</label>
                     <p class="setting-info">8-GFSK | 6.25 Hz/ton | 160 ms/symbole | 79 symboles | 12.64 s</p>
                     <p class="setting-info">LDPC(174,91) + CRC-14 | Bande: 50 Hz</p>
@@ -150,6 +172,7 @@
     <script src="ft8-modem.js"></script>
     <script src="arq.js"></script>
     <script src="directory.js"></script>
+    <script src="native-serial.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

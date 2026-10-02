@@ -243,11 +243,9 @@
     settingTxMode.dispatchEvent(new Event('change'));
   }
 
-  /** 9-line ou MIST (pas une relecture) : accuse force. */
+  /** 9-line, MIST ou leur relecture : accuse force. */
   function isFormattedOnAir(text) {
-    if (typeof text !== 'string') return false;
-    const body = splitCallsign(text).body;
-    return body[0] === '/' && Medevac.isFormatted(body);
+    return typeof text === 'string' && Medevac.isFormatted(splitCallsign(text).body);
   }
 
   /** Remplit .msg-text : carte si message formate, texte simple sinon. */
@@ -284,7 +282,7 @@
         setTimeout(trySend, 1000);
         return;
       }
-      sendText(readback, 'extended', false);
+      sendText(readback, 'extended', true); // l'emetteur accuse la relecture : la boucle est fermee
     };
     setTimeout(trySend, READBACK_DELAY_MS);
   }

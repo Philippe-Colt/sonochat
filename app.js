@@ -39,6 +39,11 @@
   const settingPttLead = document.getElementById('setting-ptt-lead');
   const settingPttTail = document.getElementById('setting-ptt-tail');
   const settingVoxTone = document.getElementById('setting-vox-tone');
+  const settingStationPos = document.getElementById('setting-station-pos');
+  const btnStationGps = document.getElementById('btn-station-gps');
+  const stationPosInfo = document.getElementById('station-pos-info');
+  const settingContactFreq = document.getElementById('setting-contact-freq');
+  const btnMedevac = document.getElementById('btn-medevac');
   const settingAck = document.getElementById('setting-ack');
   const settingCallsign = document.getElementById('setting-callsign');
   const myCallEl = document.getElementById('my-call');
@@ -85,6 +90,7 @@
 
   function init() {
     importMigration();
+    initMedevac();
     loadDirectory();
     loadHistory();
     renderHistory();
@@ -106,7 +112,8 @@
     link = new SonoLink({
       transmit: (frames, opts) => modem.transmitSymbols(frames.map(frameToSymbols), opts),
       abort: () => modem.cancelTransmit(),
-      ackEnabled: () => settingAck.checked && modem.listening,
+      // Message formate (9-line, MIST) : accuse toujours, meme case decochee
+      ackEnabled: (text) => modem.listening && (settingAck.checked || isFormattedOnAir(text)),
       callsign: () => myCallsign(),
       log: (m) => console.log('[LINK] ' + m),
     });
@@ -143,7 +150,9 @@
       _rxBubbles.set(ev.id, b);
       while (_rxBubbles.size > 50) _rxBubbles.delete(_rxBubbles.keys().next().value);
     }
-    b.el.querySelector('.msg-text').textContent = body;
+    b.el._msg.text = body;
+    b.el._msg.call = call;
+    renderBody(b.el);
     setCallEl(b.el.querySelector('.msg-call'), call);
     b.el.classList.toggle('receiving', !ev.done);
     b.el.classList.toggle('incomplete', ev.done && !ev.complete);
@@ -168,7 +177,79 @@
       }
       b.msg.status = ev.complete ? '' : 'incomplet';
       saveHistory();
+      if (ev.complete) onFormattedRx(body, call);
     }
+  }
+
+  // === Messages formates : 9-line MEDEVAC et MIST (medevac.js, medevac-ui.js) ===
+  // Toujours en etendu, avec accuse. Le recepteur renvoie ensuite ce qu'il a recu
+  // (marqueur ? au lieu de /) : l'emetteur compare et affiche « relu conforme »
+  // ou les lignes qui different.
+  const READBACK_DELAY_MS = 2000;      // apres notre accuse, avant la relecture
+  const READBACK_WINDOW_MS = 15 * 60 * 1000;
+  const _readbackDone = new Map();     // corps -> heure : une relecture par message
+
+  /** 9-line ou MIST (pas une relecture) : accuse force. */
+  function isFormattedOnAir(text) {
+    if (typeof text !== 'string') return false;
+    const body = splitCallsign(text).body;
+    return body[0] === '/' && Medevac.isFormatted(body);
+  }
+
+  /** Remplit .msg-text : carte si message formate, texte simple sinon. */
+  function renderBody(msgEl) {
+    const msg = msgEl._msg;
+    const textEl = msgEl.querySelector('.msg-text');
+    if (!msg || !textEl) return;
+    const card = Medevac.isFormatted(msg.text) && MedevacUI.renderCard(textEl, msg.text,
+      { call: msg.call, time: msg.time, readback: msg.readback });
+    msgEl.classList.toggle('formatted', !!card);
+    if (!card) textEl.textContent = msg.text;
+  }
+
+  function sendFormatted(body) {
+    if (link.busy) return;
+    sendText(body, 'extended', true);
+  }
+
+  function onFormattedRx(body, call) {
+    const dec = Medevac.decode(body);
+    if (!dec) return;
+    if (dec.readback) {
+      checkReadback(dec, body, call);
+      return;
+    }
+    // Relecture : une fois par message, apres notre accuse (sinon on le couvrirait)
+    const now = Date.now();
+    if (now - (_readbackDone.get(body) || 0) < READBACK_WINDOW_MS) return;
+    _readbackDone.set(body, now);
+    const readback = '?' + body.slice(1);
+    const trySend = () => {
+      if (!myCallsign()) return;
+      if (modem.transmitting || link.busy) {
+        setTimeout(trySend, 1000);
+        return;
+      }
+      sendText(readback, 'extended', false);
+    };
+    setTimeout(trySend, READBACK_DELAY_MS);
+  }
+
+  /** Relecture recue : la comparer au dernier message formate envoye du meme type. */
+  function checkReadback(dec, body, call) {
+    const original = '/' + body.slice(1);
+    const now = Date.now();
+    const sent = history.filter((m) => m.type === 'sent' && now - m.timestamp < READBACK_WINDOW_MS
+      && Medevac.isFormatted(m.text) && m.text[0] === '/' && m.text[1] === original[1]);
+    const target = sent.find((m) => m.text === original) || sent[sent.length - 1];
+    if (!target) return;
+    const mine = Medevac.decode(target.text);
+    const lines = target.text === original ? [] : Medevac.diff(mine, Medevac.decode(original));
+    target.readback = { by: call, ok: lines.length === 0, lines };
+    saveHistory();
+    messagesEl.querySelectorAll('.message.sent').forEach((el) => {
+      if (el._msg === target) renderBody(el);
+    });
   }
 
   // === Indicatifs ===
@@ -248,6 +329,24 @@
   function initUI() {
     // Send & Cancel
     btnSend.addEventListener('click', sendMessage);
+    btnMedevac.addEventListener('click', () => {
+      if (link.busy) return;
+      MedevacUI.openChooser();
+    });
+    settingStationPos.addEventListener('change', () => { saveAndApplySettings(); updateStationPosInfo(); });
+    settingContactFreq.addEventListener('change', saveAndApplySettings);
+    btnStationGps.addEventListener('click', () => {
+      if (!navigator.geolocation) return;
+      stationPosInfo.textContent = 'Recherche de la position...';
+      navigator.geolocation.getCurrentPosition((g) => {
+        settingStationPos.value = Medevac.toMgrs(g.coords.latitude, g.coords.longitude)
+          || g.coords.latitude.toFixed(5) + ', ' + g.coords.longitude.toFixed(5);
+        saveAndApplySettings();
+        updateStationPosInfo();
+      }, (e) => {
+        stationPosInfo.textContent = 'Position GPS impossible : ' + (e.code === 1 ? 'autorisation refusee.' : 'pas de signal.');
+      }, { enableHighAccuracy: true, timeout: 20000 });
+    });
     btnCancel.addEventListener('click', cancelMessage);
     msgInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !btnSend.disabled) {
@@ -377,6 +476,9 @@
     settingPttLead.value = settings.pttLeadMs;
     settingPttTail.value = settings.pttTailMs;
     settingVoxTone.checked = settings.voxTone === true;
+    settingStationPos.value = settings.stationPos || '';
+    settingContactFreq.value = settings.contactFreq || '';
+    updateStationPosInfo();
     settingTxMode.value = settings.txMode || 'standard';
     settingAck.checked = settings.ack === true;
     settingCallsign.value = settings.callsign || '';
@@ -420,19 +522,28 @@
   async function sendMessage() {
     const text = msgInput.value.trim();
     if (!text || link.busy) return;
+    if (!myCallsign()) {
+      askCallsign();
+      return;
+    }
+    const mode = settingTxMode.value;
+    msgInput.value = '';
+    charCount.textContent = '0/' + maxTextLength(mode);
+    txDurationEl.textContent = '';
+    await sendText(text, mode, settingAck.checked);
+  }
 
+  /**
+   * Emet un texte (sans l'indicatif, ajoute ici) et suit son sort dans une bulle.
+   * Les messages formates passent par la : mode etendu, accuse force.
+   */
+  async function sendText(text, mode, ack) {
+    if (link.busy) return;
     const callsign = myCallsign();
     if (!callsign) {
       askCallsign();
       return;
     }
-
-    const mode = settingTxMode.value;
-    const maxLen = maxTextLength(mode);
-    let ack = settingAck.checked;
-    msgInput.value = '';
-    charCount.textContent = '0/' + maxLen;
-    txDurationEl.textContent = '';
     btnSend.disabled = true;
 
     // Show cancel button, hide send
@@ -528,10 +639,12 @@
     const sourceTag = type === 'received' ? ' <span class="rx-source">FT8</span>' : '';
     msgEl.innerHTML = `
       ${type === 'received' ? '<div class="msg-call"></div>' : callSpan(call, 'div', 'msg-call')}
-      <div class="msg-text">${escapeHtml(text)}</div>
+      <div class="msg-text"></div>
       <div class="msg-meta">${timeStr}${metaExtra}${sourceTag}</div>
     `;
     if (type === 'received') setCallEl(msgEl.querySelector('.msg-call'), call);
+    msgEl._msg = msg;
+    renderBody(msgEl);
 
     // Remove system message if it exists
     const sysMsg = messagesEl.querySelector('.system-msg');
@@ -578,9 +691,11 @@
       const status = msg.status ? ` <span class="link-status">${txStatusHtml(msg.status, msg.ackBy)}</span>` : '';
       msgEl.innerHTML = `
         ${callSpan(msg.call, 'div', 'msg-call')}
-        <div class="msg-text">${escapeHtml(msg.text)}</div>
+        <div class="msg-text"></div>
         <div class="msg-meta">${msg.time}${status}</div>
       `;
+      msgEl._msg = msg;
+      renderBody(msgEl);
       messagesEl.appendChild(msgEl);
     });
 
@@ -794,7 +909,7 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false };
+    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'standard', ack: false, callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
@@ -824,6 +939,9 @@
       pttLeadMs: clampMs(settingPttLead.value, 100),
       pttTailMs: clampMs(settingPttTail.value, 150),
       voxTone: settingVoxTone.checked,
+      stationPos: settingStationPos.value.trim(),
+      contactFreq: settingContactFreq.value.trim(),
+      medevacPeace: loadSettings().medevacPeace,
       v: 2,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
@@ -1023,6 +1141,42 @@
     serialStatusEl.classList.toggle('connected', connected);
     serialIndicator.classList.toggle('hidden', !connected);
     serialIndicator.classList.toggle('connected', connected);
+  }
+
+  function initMedevac() {
+    MedevacUI.init({
+      getCall: myCallsign,
+      askCall: askCallsign,
+      callLabel: (c) => (c ? displayCall(c) : ''),
+      getStation: () => {
+        const s = loadSettings();
+        return { pos: s.stationPos, freq: s.contactFreq, peace: s.medevacPeace };
+      },
+      savePeace: (peace) => {
+        const s = loadSettings();
+        s.medevacPeace = peace;
+        localStorage.setItem('sonochat-settings', JSON.stringify(s));
+      },
+      send: sendFormatted,
+      isNative,
+      share: nativeShare,
+    });
+  }
+
+  /** Partage natif (application : plugin Capacitor Share). false : non disponible. */
+  async function nativeShare(title, text) {
+    const share = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Share;
+    if (!isNative || !share) return false;
+    await share.share({ title, text, dialogTitle: title });
+    return true;
+  }
+
+  function updateStationPosInfo() {
+    const v = settingStationPos.value.trim();
+    const p = Medevac.parsePosition(v);
+    stationPosInfo.textContent = !v ? 'Utilisee par defaut pour la ligne 1 du 9-line.'
+      : p ? (Medevac.toMgrs(p.lat, p.lon) || '') + ' · ' + Medevac.formatLatLon(p.lat, p.lon)
+      : 'Position non reconnue : MGRS (31U DQ 4825 1193) ou degres (48.8584, 2.2945).';
   }
 
   // === Service Worker ===

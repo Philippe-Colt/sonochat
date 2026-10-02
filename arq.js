@@ -168,7 +168,7 @@ class SonoLink {
    * @param {function(): number} [io.now]  horloge en ms
    * @param {function(function, number): any} [io.setTimer]
    * @param {function(any): void} [io.clearTimer]
-   * @param {function(): boolean} [io.ackEnabled]  réglage « Accusés » local
+   * @param {function(string=): boolean} [io.ackEnabled]  réglage « Accusés » local (texte reçu, s'il y en a un)
    * @param {function(): string} [io.callsign]  indicatif court (2 car.) placé dans nos accusés
    */
   constructor(io) {
@@ -519,13 +519,13 @@ class SonoLink {
     this.clearTimer(entry.timer);
     entry.timer = null;
     entry.done = true;
-    const willAck = this.ackEnabled();
+    const willAck = this.ackEnabled(entry.text);
     this._emitRx({ id: entry.rxId, text: entry.text, done: true, complete: entry.complete, ackSent: willAck });
     this._ackText(entry, willAck);
   }
 
   _ackText(entry, willAck) {
-    if (!willAck || !this.ackEnabled()) return;
+    if (!willAck || !this.ackEnabled(entry.text)) return;
     this.log('TX ACK texte ' + textHash(entry.text).toString(16));
     this._transmitQuiet([{ kind: 'tele', value: SonoFrame.ackText(textHash(entry.text), this.callsign()) }]);
   }

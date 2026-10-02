@@ -60,6 +60,7 @@
                 <input type="checkbox" id="setting-ack">
                 Accuses
             </label>
+            <button id="btn-medevac" class="medevac-btn" type="button" title="Message formate : 9-line MEDEVAC ou fiche blessé MIST">MEDEVAC</button>
         </div>
 
         <div id="input-area">
@@ -152,6 +153,18 @@
                     <p class="setting-info">Avance : PTT ferme avant le son (temps de commutation du poste). Maintien : PTT garde apres la fin du son (latence audio).</p>
                 </div>
                 <div class="setting-group">
+                    <label for="setting-station-pos">Position de la station (9-line)</label>
+                    <div class="station-pos-row">
+                        <input type="text" id="setting-station-pos" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="31U DQ 4825 1193">
+                        <button id="btn-station-gps" class="serial-btn" type="button">GPS</button>
+                    </div>
+                    <p class="setting-info" id="station-pos-info"></p>
+                </div>
+                <div class="setting-group">
+                    <label for="setting-contact-freq">Frequence de contact (MHz, ligne 2 du 9-line)</label>
+                    <input type="text" id="setting-contact-freq" inputmode="decimal" autocomplete="off" placeholder="145.500">
+                </div>
+                <div class="setting-group">
                     <label class="checkbox-label">
                         <input type="checkbox" id="setting-vox-tone">
                         PTT par tonalite (VOX)
@@ -174,6 +187,9 @@
     <script src="arq.js"></script>
     <script src="directory.js"></script>
     <script src="native-serial.js"></script>
+    <script src="medevac.js"></script>
+    <script src="qrcode.js"></script>
+    <script src="medevac-ui.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

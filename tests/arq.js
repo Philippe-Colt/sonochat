@@ -45,7 +45,7 @@ function makeStation(sim, name, opts = {}) {
   let aborted = false;
   st.link = new SonoLink({
     now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
-    ackEnabled: () => st.ackEnabled,
+    ackEnabled: (text) => (typeof st.ackEnabled === 'function' ? st.ackEnabled(text) : st.ackEnabled),
     callsign: () => opts.call || '',
     abort: () => { aborted = true; },
     transmit: (frames, o = {}) => new Promise((resolve) => {
@@ -290,6 +290,19 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     const { sim, A, B } = pair({ b: { ack: false } });
     const r = await exchange(sim, A, 'HELLO', 'standard', true);
     check('récepteur « Accusés » décoché : il n\'émet pas', B.sent.length === 0 && r.status === 'failed');
+  }
+
+  {
+    // Message formaté (9-line) : l'application accuse même case décochée (app.js, isFormattedOnAir)
+    const M = require('../medevac.js');
+    const nine = M.encode({ nine: { lat: 48.85, lon: 2.29, counts: [1, 0, 0, 0, 0], litter: 1, security: 0, marking: 2, nation: [3] } });
+    const { sim, A, B } = pair({ b: { ack: false } });
+    B.ackEnabled = (text) => typeof text === 'string' && text.slice(2, 4) === '/9';
+    const r = await exchange(sim, A, 'PC' + nine, 'extended');
+    check('9-line étendu : accusé malgré la case décochée', r.status === 'confirmed', JSON.stringify(r));
+    check('9-line : texte reçu intact', doneMsgs(B).some((m) => m.text === 'PC' + nine), doneMsgs(B).map((m) => m.text).join(' | '));
+    const r2 = await exchange(sim, A, 'PCBONJOUR', 'standard');
+    check('texte normal : toujours pas d\'accusé', r2.status === 'failed');
   }
 
   console.log('Indicatif de la station qui accuse');

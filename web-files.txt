@@ -7,6 +7,9 @@ ft8-modem.js
 arq.js
 directory.js
 native-serial.js
+medevac.js
+medevac-ui.js
+qrcode.js
 app.js
 sw.js
 manifest.json

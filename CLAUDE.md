@@ -12,6 +12,10 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   Aucune logique de dialogue : émet des listes de symboles, signale chaque trame décodée (`onFrame`)
 - `arq.js` — `SonoLink` : accusés de réception et répétitions (voir plus bas). Sans DOM ni audio
   (émission, horloge, minuteurs injectés), testable en Node
+- `medevac.js` — Messages formatés 9-line MEDEVAC et MIST : codage compact, MGRS, texte en clair.
+  Sans DOM, testable en Node
+- `medevac-ui.js` — Saisie à gros boutons, carte dans le fil, plein écran, partage, QR code, impression
+- `qrcode.js` — Générateur de QR code (Kazuhiko Arase, licence MIT, non modifié)
 - `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long)
 - `native-serial.js` — Application Android : `NativePttPort`, même interface que le `SerialPort`
   de Web Serial, au-dessus du plugin natif `UsbSerial`
@@ -79,6 +83,34 @@ RPT       : type=2 (2) | msgId (5) | seq (4)
 - Répétition reçue (accusé perdu) : reconnue (msgId/seq, ou même texte < 180 s), pas de
   doublon affiché, réaccusée. Un étendu reçu avec des trous est complété par sa répétition.
 
+## Messages formatés : 9-line MEDEVAC et MIST (`medevac.js`, `medevac-ui.js`)
+
+Bouton **MEDEVAC** (barre au-dessus de la saisie) → 9-line ou MIST seul, un écran par ligne,
+gros boutons, passage automatique après un choix unique, récapitulatif décodé avant envoi.
+
+Format sur l'air (après l'indicatif) — **à ne jamais réordonner**, seulement étendre :
+```
+/9 + 22 car.                  9-line (lignes 1 à 9)            → 26 car. = 2 blocs étendus
+/M + n + n × 11 car.          MIST, n blessés (1-11, 9 après un 9-line)
+? au lieu du premier /        relecture (collationnement) du message reçu
+puis remarque libre facultative (≤ 128 car. au total)
+```
+- Chaque bloc de champs = un entier en base mixte (`NINE_RADIX`, `MIST_RADIX`), écrit en
+  **base 41 = alphabet FT8 sans l'espace** (FT8 rogne les espaces en fin de bloc). Champ `version`
+  (0) en tête pour faire évoluer le format.
+- Ligne 1 : 1e-4° (~10 m, comme un MGRS 8 chiffres), GPS du téléphone ou position de la station
+  (paramètres, MGRS ou degrés). Ligne 2 : fréquence de contact (paramètres) + indicatif de
+  l'émetteur. Lignes 6 et 9 : variante guerre (sécurité, NRBC) ou paix (blessures, terrain).
+- Toujours en **étendu, accusé forcé** : `ackEnabled(text)` (arq.js passe le texte reçu) accuse
+  un message `/9` ou `/M` même case « Accusés » décochée. Puis le récepteur **renvoie** le message
+  avec `?` (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur
+  compare (`checkReadback`) → « Relu conforme par XY » ou les lignes qui diffèrent (`msg.readback`).
+- Message abîmé (bloc perdu) ou non décodable → affiché en texte simple.
+- Plein écran (noir, écran maintenu allumé), Partager (plugin `@capacitor/share` dans l'appli,
+  Web Share sinon, presse-papiers en dernier recours), QR code du texte en clair, Imprimer
+  (`body.mv-printing` + `@media print` ; dans l'appli : passe par Partager).
+- Appli Android : permissions de localisation dans `AndroidManifest.xml`.
+
 ## Démodulation (RX)
 
 Passe de décodage toutes les 2 s sur tout le ring buffer (~130 s) :
@@ -126,6 +158,9 @@ node tests/arq.js
 
 # Import d'annuaire
 node tests/directory.js
+
+# Messages formatés 9-line / MIST : codage, MGRS (référence publiée), texte en clair
+node tests/medevac.js
 
 # Séquencement PTT (avance/maintien, annulation) et adaptateur natif
 node tests/ptt-timing.js

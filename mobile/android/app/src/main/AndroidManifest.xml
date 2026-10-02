@@ -49,6 +49,10 @@
     <!-- Micro (getUserMedia de la WebView) et choix de la sortie audio -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Ligne 1 du 9-line : position GPS (navigator.geolocation de la WebView) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- PTT par interface USB-série ; non requis pour installer l'application -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 </manifest>

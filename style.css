@@ -1538,3 +1538,20 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 /* Accusé en cours d'émission : clignote */
 .link-status.tx-live { color: var(--accent, #e94560); animation: tx-live 1s ease-in-out infinite; }
 @keyframes tx-live { 50% { opacity: 0.35; } }
+
+/* Barre « Balise » : prochaine émission automatique, dernière balise reçue */
+#auto-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 3px 12px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#auto-bar[hidden] { display: none; }
+#auto-bar > span { margin-right: 10px; }
+#auto-next.live { color: var(--accent, #e94560); font-weight: 700; animation: tx-live 1s ease-in-out infinite; }
+#auto-next.warn { color: #f39c12; }

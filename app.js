@@ -165,7 +165,11 @@
       log: (m) => console.log('[LINK] ' + m),
     });
     modem.onFrame = (frame) => link.handleFrame(frame);
-    link.onBeacon = (ev) => storePosition(ev.call, ev.lat, ev.lon, Date.now());
+    link.onBeacon = (ev) => {
+      storePosition(ev.call, ev.lat, ev.lon, Date.now());
+      lastRxBeacon = { call: ev.call, t: Date.now() };
+      renderAutoBar();
+    };
     modem.onUndecoded = (info) => link.handleUndecoded(info);
     link.onRx = onLinkRx;
     link.onTx = onLinkTx;
@@ -1860,7 +1864,13 @@
 
   function beaconTick() {
     const s = loadSettings();
-    if (!s.beaconOn || !beaconFix || beaconBusy || !myCallsign() || link.busy || modem.transmitting) return;
+    if (!s.beaconOn || beaconBusy) return;
+    // Raisons visibles sur l'écran principal (barre « Balise ») : sinon rien ne dit pourquoi
+    // aucune balise ne part
+    if (!myCallsign()) { beaconBlock = 'pas d\'indicatif'; return; }
+    if (!beaconFix) { beaconBlock = 'en attente du GPS'; return; }
+    if (link.busy || modem.transmitting) { beaconBlock = 'envoi en cours'; return; }
+    beaconBlock = '';
     const now = Date.now();
     // Écart minimal compté au créneau près (un tour exact peut tomber quelques ms avant)
     if (beaconLast && now - beaconLast.t < beaconMinGap() - SLOT_GRACE_MS) return;
@@ -1878,6 +1888,9 @@
       // Canal occupé, envoi ou réception en cours : on laisse passer ce créneau
       if (!loadSettings().beaconOn || !beaconFix || link.busy || modem.transmitting || !link.canTransmitNow()) {
         beaconBusy = false;
+        beaconBlock = !beaconFix ? 'en attente du GPS' : link.busy || modem.transmitting ? 'envoi en cours' : 'canal occupe au creneau';
+        beaconBlockAt = Date.now();
+        console.log('[BALISE] creneau manque : ' + beaconBlock);
         updateBeaconInfo();
         return;
       }
@@ -1887,15 +1900,67 @@
 
   function sendBeacon() {
     const fix = beaconFix;
+    beaconSending = true;
+    renderAutoBar();
     link.beacon(fix.lat, fix.lon).then((sent) => {
       beaconBusy = false;
-      if (!sent) return;
+      beaconSending = false;
+      if (!sent) { beaconBlock = 'emission impossible'; beaconBlockAt = Date.now(); renderAutoBar(); return; }
+      beaconBlock = '';
       beaconLast = { t: Date.now(), lat: fix.lat, lon: fix.lon };
       try { localStorage.setItem('chatmtx-beacon-last', JSON.stringify(beaconLast)); } catch (e) { /* idem */ }
       storePosition(myCallsign(), fix.lat, fix.lon, beaconLast.t);
       updateBeaconInfo();
-    }, () => { beaconBusy = false; });
+    }, () => { beaconBusy = false; beaconSending = false; });
   }
+
+  // === Barre « Balise » de l'écran principal : prochaine émission automatique ===
+  let beaconBlock = '', beaconBlockAt = 0, beaconSending = false, lastRxBeacon = null;
+
+  /** Heure de la prochaine balise (ms), ou null si elle dépend seulement de la distance. */
+  function nextBeaconAt() {
+    const s = loadSettings(), now = Date.now();
+    let due = now;
+    if (beaconLast) {
+      const byTime = s.beaconMin > 0 ? beaconLast.t + s.beaconMin * 60000 : Infinity;
+      if (byTime === Infinity) return null; // distance seulement
+      due = Math.max(byTime, beaconLast.t + beaconMinGap(), now);
+    }
+    const sl = mySlot();
+    return sl ? nextSlotStart(due, sl.slot, sl.slotS, sl.round, 0) : due;
+  }
+
+  const hhmmss = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const mmss = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+  function renderAutoBar() {
+    const bar = document.getElementById('auto-bar');
+    if (!bar) return;
+    const s = loadSettings(), now = Date.now();
+    let next = '', cls = '';
+    if (s.beaconOn) {
+      const sl = mySlot();
+      const slotTxt = sl ? ' · creneau ' + sl.slot + '/' + sl.round : '';
+      if (beaconSending) { next = 'Balise : emission en cours...'; cls = 'live'; }
+      else if (beaconLast && now - beaconLast.t < 8000) next = 'Balise emise a ' + hhmmss(beaconLast.t);
+      else if (beaconBlock && beaconBlock !== 'canal occupe au creneau') { next = 'Balise : ' + beaconBlock; cls = 'warn'; }
+      else {
+        const at = beaconNextSlot || nextBeaconAt();
+        if (at === null) next = 'Balise apres ' + s.beaconM + ' m parcourus' + slotTxt;
+        else {
+          next = 'Balise dans ' + mmss(at - now) + ' (' + hhmmss(at) + ')' + slotTxt;
+          if (s.beaconM > 0) next += ' ou apres ' + s.beaconM + ' m';
+        }
+        if (beaconBlock && now - beaconBlockAt < 5 * 60000) { next += ' · creneau precedent manque : canal occupe'; cls = 'warn'; }
+      }
+    }
+    const rx = lastRxBeacon ? 'Balise recue : ' + displayCall(lastRxBeacon.call) + ' a ' + hhmmss(lastRxBeacon.t) : '';
+    document.getElementById('auto-next').textContent = next;
+    document.getElementById('auto-next').className = cls;
+    document.getElementById('auto-rx').textContent = rx;
+    bar.hidden = !next && !rx;
+  }
+  setInterval(renderAutoBar, 1000);
 
   function updateBeaconInfo(err) {
     if (!beaconInfo) return;

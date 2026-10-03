@@ -253,6 +253,14 @@ plan). Reçue : `onBeacon` → `positions` (`localStorage` `chatmtx-positions`, 
 station), **pas dans le fil** ; la carte place l'unité à sa dernière position (« balise HH:MM »)
 et prolonge son trajet (`collect(..., positions)`). Les versions sans type 3 l'ignorent.
 
+**Barre « Balise » de l'écran principal** (`#auto-bar`, `renderAutoBar`, chaque seconde, sous la
+barre des canaux) : « Balise dans 2:35 (21:04:30) · creneau 3/12 ou apres 500 m »
+(`nextBeaconAt` : dernière balise + intervalle, écart minimal, puis début de mon créneau),
+« emission en cours... », « emise a … », ou la raison du blocage (`beaconBlock` : pas
+d'indicatif, en attente du GPS, envoi en cours ; « creneau precedent manque : canal occupe »
+quand le canal n'était pas libre au début du créneau → tour suivant). À droite : **dernière
+balise reçue** (« Balise recue : F4MTX a 21:03:12 »), puisqu'une balise n'apparaît pas dans le fil.
+
 ## Carte tactique (`tacmap.js`, `tiles.js`)
 
 Bouton carte (en-tête). Symboles **APP-6** (`milsymbol.js` 3.0.4, MIT) posés depuis

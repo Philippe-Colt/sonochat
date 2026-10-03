@@ -734,6 +734,8 @@ async function scenario(title, fn) {
     check('XY : position de PC au mètre', pt && Math.abs(pt[0] - 48.8530) < 2e-5 && Math.abs(pt[1] - 2.3499) < 2e-5, posXY);
     const xy = await state('XY');
     check('XY : rien dans le fil, aucune réponse', xy.bubbles.length === 0 && txBy('XY') === 0 && txBy('ZZ') === 0, xy.bubbles);
+    const rxBar = await pages.XY.evaluate(() => document.getElementById('auto-rx').textContent);
+    check('XY : « Balise reçue : F4MTX » sur l\'écran principal', /^Balise recue : F4MTX a \d\d:\d\d:\d\d$/.test(rxBar), rxBar);
     await pages.XY.evaluate(() => Object.defineProperty(navigator, 'onLine', { get: () => false }));
     await pages.XY.click('#btn-map');
     await sleep(1200);
@@ -763,6 +765,9 @@ async function scenario(title, fn) {
     // Balise : seulement au début du créneau 2 (13-26 s de chaque tour de 26 s)
     const before = txLog.length;
     await pages.PC.evaluate(() => { const c = document.getElementById('setting-beacon'); c.checked = true; c.dispatchEvent(new Event('change')); });
+    await sleep(5000);
+    const bar = await pages.PC.evaluate(() => document.getElementById('auto-next').textContent);
+    check('écran principal : compte à rebours de la balise et son créneau', /^Balise (dans \d+:\d\d \(\d\d:\d\d:\d\d\) · creneau 2\/2|: emission en cours|emise a)/.test(bar), bar);
     const deadline = Date.now() + 40000;
     while (Date.now() < deadline && !txLog.slice(before).some((x) => x.type === 'pos')) await sleep(250);
     const b = txLog.slice(before).find((x) => x.type === 'pos');

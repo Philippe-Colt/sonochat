@@ -35,4 +35,7 @@ if [ -f "$APK" ]; then
   echo "APK publie : https://chatmtx.f4mtx.com/chatmtx.apk ($(du -h "$APK" | cut -f1))"
 fi
 
+# Service des annuaires sur le serveur (/api/annuaire), mis à jour s'il a changé
+server/install.sh
+
 echo "Déployé dans $DEST (cache chatmtx-$HASH) → https://chatmtx.f4mtx.com"

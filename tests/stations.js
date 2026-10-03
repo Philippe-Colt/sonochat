@@ -846,6 +846,66 @@ async function scenario(title, fn) {
     for (const name of STATIONS) pages[name].off('dialog', onDialog);
   });
 
+  await scenario('38. Annuaire de test par défaut, envoi et chargement sur le serveur', async () => {
+    await freshAll();
+    // Premier lancement (aucun annuaire enregistré) : annuaire de test
+    await pages.ZZ.evaluate(() => { localStorage.clear(); localStorage.setItem('sonochat-settings', JSON.stringify({ callsign: '05', v: 3 })); });
+    await pages.ZZ.reload();
+    const zz = await pages.ZZ.evaluate(() => ({ n: Object.keys(JSON.parse(localStorage.getItem('sonochat-directory'))).length,
+      st: document.getElementById('directory-status').textContent, f: document.getElementById('setting-base-freq').value }));
+    check('premier lancement : annuaire de test (12 stations, réseau TEST), 05 sur 1640 Hz', zz.n === 12 && /reseau TEST, version 1/.test(zz.st) && zz.f === '1640', zz);
+    // Service des annuaires lancé en local ; les pages y sont redirigées
+    const { spawn } = require('child_process'), os = require('os');
+    const PORT = 19790 + Math.floor(Math.random() * 1000);
+    const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'chatmtx-api-'));
+    const api = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'annuaire-server.js')],
+      { env: Object.assign({}, process.env, { PORT, CHATMTX_DATA: DATA }), stdio: ['ignore', 'pipe', 'inherit'] });
+    process.on('exit', () => api.kill());
+    await new Promise((r) => api.stdout.once('data', r));
+    const proxy = async (route) => {
+      const req = route.request();
+      const r = await fetch('http://127.0.0.1:' + PORT + new (require('url').URL)(req.url()).pathname, { method: req.method(), headers: { 'Content-Type': 'application/json' }, body: req.postData() });
+      await route.fulfill({ status: r.status, contentType: 'application/json', body: await r.text() });
+    };
+    const onDialog = (d) => d.accept();
+    try {
+      for (const name of ['PC', 'XY']) { await pages[name].route('**/api/annuaire/*', proxy); pages[name].on('dialog', onDialog); }
+      const P = pages.PC, X = pages.XY;
+      await P.evaluate(() => DirectoryUI.open());
+      await P.click('.dir-tool [data-act="test"]');
+      check('bouton TEST : 12 stations', (await P.$$('.dir-row')).length === 12);
+      await P.fill('#dir-srv-name', 'exo-test');
+      await P.fill('#dir-srv-code', 'motdepasse');
+      await P.click('.dir-tool [data-act="upload"]');
+      await P.waitForFunction(() => /serveur/.test((document.querySelector('.dir-msg') || {}).textContent || '') || /\S/.test(document.getElementById('dir-srv-msg').textContent.replace('Envoi…', '')));
+      const up = await P.textContent('.dir-msg');
+      check('ENVOYER : réseau créé sur le serveur, version 2 (nom ajouté)', /Réseau EXO-TEST créé sur le serveur, version 2, 12 stations/.test(up), up);
+      await X.evaluate(() => DirectoryUI.open());
+      await X.fill('#dir-srv-name', 'EXO-TEST');
+      await X.fill('#dir-srv-code', 'mauvais!');
+      await X.click('.dir-tool [data-act="download"]');
+      await X.waitForFunction(() => /code faux/.test(document.getElementById('dir-srv-msg').textContent));
+      check('CHARGER avec un code faux : refusé', true);
+      await X.fill('#dir-srv-code', 'motdepasse');
+      await X.click('.dir-tool [data-act="download"]');
+      await X.waitForFunction(() => /Reçu version 2/.test((document.querySelector('.dir-msg') || {}).textContent || ''));
+      const xy = await X.evaluate(() => ({ rows: document.querySelectorAll('.dir-row').length, net: JSON.parse(localStorage.getItem('chatmtx-directory-net')).net,
+        srv: JSON.parse(localStorage.getItem('chatmtx-directory-server')) }));
+      check('CHARGER : annuaire du serveur appliqué, nom et code mémorisés', xy.rows === 12 && xy.net.name === 'EXO-TEST' && xy.net.version === '2'
+        && xy.srv.reseau === 'EXO-TEST' && xy.srv.code === 'motdepasse', xy);
+      await P.click('.dir-row >> nth=0');
+      await P.click('.dir-tool [data-f="1"]');
+      await P.click('.dir-tool [data-act="ok"]');
+      await P.click('.dir-tool [data-act="upload"]');
+      await P.waitForFunction(() => /Enregistré sur le serveur/.test((document.querySelector('.dir-msg') || {}).textContent || ''));
+      check('modification renvoyée : version 3 sur le serveur', /version 3/.test(await P.textContent('.dir-msg')));
+    } finally {
+      for (const name of ['PC', 'XY']) { await pages[name].unroute('**/api/annuaire/*'); pages[name].off('dialog', onDialog); }
+      api.kill();
+      fs.rmSync(DATA, { recursive: true, force: true });
+    }
+  });
+
   await scenario('33. MEDEVAC ouvre directement le 9-line', async () => {
     await freshAll();
     await setDest(pages.PC, 'XY');

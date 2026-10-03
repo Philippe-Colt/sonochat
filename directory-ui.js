@@ -5,10 +5,14 @@
  * stations : enregistrer ici, partager le fichier, QR code (lien lu par l'appareil photo de
  * n'importe quel téléphone), importer par collage ou scan. Le format est dans directory.js.
  *
- * DirectoryUI.init({ current, apply, share, isNative })
+ * DirectoryUI.init({ current, apply, share, isNative, apiBase })
  *   current()      annuaire en service {map, units, channels, net}
  *   apply(text, label) applique un fichier d'annuaire ; renvoie le compte rendu (null : refusé)
  *   share(title, text) partage natif (application) ou null
+ *   apiBase        adresse du serveur ('' : même origine ; application : https://chatmtx.f4mtx.com/)
+ *
+ * Serveur (server/annuaire-server.js) : annuaire rangé sous un nom de réseau, protégé par un
+ * code ; nom et code mémorisés sur le téléphone (chatmtx-directory-server).
  */
 (function () {
   'use strict';
@@ -102,7 +106,7 @@
       </button>`).join('');
     frame({
       title: 'Annuaire du réseau',
-      sub: (net.version ? 'Version ' + net.version + (net.date ? ' du ' + net.date : '') : 'Nouvel annuaire') + ' · ' + entries.length + ' station' + (entries.length > 1 ? 's' : '') + (dirty ? ' · non enregistré' : ''),
+      sub: (net.name ? 'Réseau ' + net.name + ' · ' : '') + (net.version ? 'Version ' + net.version + (net.date ? ' du ' + net.date : '') : 'Nouvel annuaire') + ' · ' + entries.length + ' station' + (entries.length > 1 ? 's' : '') + (dirty ? ' · non enregistré' : ''),
       body: `
         ${msg ? `<p class="dir-msg">${esc(msg)}</p>` : ''}
         <div class="mv-grid mv-grid-1">${rows || '<p class="mv-pos-msg">Aucune station : AJOUTER, ou IMPORTER un annuaire reçu.</p>'}
@@ -129,10 +133,21 @@
           <button type="button" class="mv-big" data-act="share"${entries.length ? '' : ' disabled'}><b>PARTAGER</b><span>Le fichier par SMS, mail…</span></button>
           ${opts.isNative ? '' : `<button type="button" class="mv-big" data-act="file"${entries.length ? '' : ' disabled'}><b>FICHIER</b><span>Télécharger le .csv</span></button>`}
         </div>
+        <h3 class="mv-family">Serveur</h3>
+        <div class="dir-form dir-srv">
+          <label>Nom du réseau<input type="text" id="dir-srv-name" maxlength="20" autocapitalize="characters" spellcheck="false" value="${esc(srv().reseau)}" placeholder="EXERCICE-OCT"></label>
+          <label>Code du réseau (6 caractères au moins)<input type="password" id="dir-srv-code" maxlength="64" autocomplete="off" value="${esc(srv().code)}" placeholder="partagé avec les stations"></label>
+        </div>
+        <div class="mv-grid mv-grid-2">
+          <button type="button" class="mv-big" data-act="upload"${entries.length ? '' : ' disabled'}><b>ENVOYER</b><span>Enregistrer cet annuaire sur le serveur</span></button>
+          <button type="button" class="mv-big" data-act="download"><b>CHARGER</b><span>Prendre celui du serveur</span></button>
+        </div>
+        <p class="mv-pos-msg" id="dir-srv-msg"></p>
         <h3 class="mv-family">Recevoir un annuaire</h3>
         <div class="mv-grid mv-grid-2">
           <button type="button" class="mv-big" data-act="scan"><b>SCANNER</b><span>Le QR code d'un autre téléphone</span></button>
           <button type="button" class="mv-big" data-act="paste"><b>COLLER</b><span>Un lien ou un fichier reçu</span></button>
+          <button type="button" class="mv-big" data-act="test"><b>TEST</b><span>Annuaire générique de 12 stations (01 à 12)</span></button>
         </div>`,
     });
     overlay.querySelectorAll('[data-i]').forEach((b) => { b.onclick = () => renderEdit(+b.dataset.i); });
@@ -158,6 +173,21 @@
     on('[data-act="file"]', download);
     on('[data-act="scan"]', renderScan);
     on('[data-act="paste"]', renderPaste);
+    for (const id of ['dir-srv-name', 'dir-srv-code']) {
+      overlay.querySelector('#' + id).addEventListener('input', (ev) => {
+        if (id === 'dir-srv-name') {
+          const v = ev.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+          if (v !== ev.target.value) ev.target.value = v;
+        }
+        saveSrv({ reseau: overlay.querySelector('#dir-srv-name').value, code: overlay.querySelector('#dir-srv-code').value });
+      });
+    }
+    on('[data-act="upload"]', upload);
+    on('[data-act="download"]', downloadSrv);
+    on('[data-act="test"]', () => {
+      if (!confirm('Remplacer l\'annuaire de ce téléphone par l\'annuaire de test (12 stations) ?')) return;
+      receive(TEST_DIRECTORY, 'annuaire de test');
+    });
   }
 
   function fmt(sec) {
@@ -320,6 +350,71 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
     renderList('Fichier ' + a.download + ' téléchargé.');
+  }
+
+  // ---------------- Serveur ----------------
+
+  const SRV_KEY = 'chatmtx-directory-server';
+  function srv() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(SRV_KEY) || 'null'); } catch (e) { s = null; }
+    s = s || { reseau: '', code: '' };
+    if (!s.reseau && net && net.name) s.reseau = net.name;
+    return s;
+  }
+  function saveSrv(s) {
+    try { localStorage.setItem(SRV_KEY, JSON.stringify(s)); } catch (e) { /* stockage plein */ }
+  }
+
+  const srvMsg = (t) => { const m = overlay && overlay.querySelector('#dir-srv-msg'); if (m) m.textContent = t; };
+
+  /** Requête au service des annuaires ; renvoie la réponse JSON ou {ok:false, error}. */
+  async function api(op, body) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => { if (ctl) ctl.abort(); }, 15000);
+    try {
+      const r = await fetch((opts.apiBase || '') + 'api/annuaire/' + op, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctl ? ctl.signal : undefined,
+      });
+      let j = null;
+      try { j = await r.json(); } catch (e) { j = null; }
+      return j || { ok: false, error: 'Réponse du serveur illisible (' + r.status + ').' };
+    } catch (e) {
+      return { ok: false, error: 'Serveur injoignable (hors ligne ?).' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function srvFields() {
+    const s = { reseau: overlay.querySelector('#dir-srv-name').value.trim(), code: overlay.querySelector('#dir-srv-code').value };
+    if (!/^[A-Z0-9_-]{3,20}$/.test(s.reseau)) { srvMsg('Nom du réseau : 3 à 20 lettres, chiffres, - ou _.'); return null; }
+    if (s.code.length < 6) { srvMsg('Code : 6 caractères au moins.'); return null; }
+    saveSrv(s);
+    return s;
+  }
+
+  async function upload() {
+    const s = srvFields();
+    if (!s) return;
+    if (net.name !== s.reseau) { net.name = s.reseau; dirty = true; } // le fichier porte le nom du réseau
+    const t = text();
+    srvMsg('Envoi…');
+    const r = await api('save', { reseau: s.reseau, code: s.code, text: t });
+    if (!r.ok) { renderList(); srvMsg(r.error); return; }
+    const report = opts.apply(t, 'serveur'); // ce téléphone = le serveur
+    renderList((r.created ? 'Réseau ' + r.reseau + ' créé sur le serveur' : 'Enregistré sur le serveur (réseau ' + r.reseau + ')')
+      + ', version ' + (r.version || '-') + ', ' + r.stations + ' stations.' + (report ? '' : ' Non appliqué ici.'));
+  }
+
+  async function downloadSrv() {
+    const s = srvFields();
+    if (!s) return;
+    srvMsg('Chargement…');
+    const r = await api('load', s);
+    if (!r.ok) { srvMsg(r.error); return; }
+    const err = receive(r.text, 'serveur, réseau ' + r.reseau);
+    if (err) srvMsg(err);
   }
 
   // ---------------- Réception ----------------

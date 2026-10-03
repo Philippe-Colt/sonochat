@@ -10,7 +10,7 @@
  * ignoré. Colonne vide ou « - » : non renseignée. Canal : fréquence audio
  * d'émission en Hz (ton 0) ; créneau : rang 1-98 dans le tour des émissions
  * automatiques. Lignes vides ou commençant par # ignorées, sauf l'en-tête réseau
- * « #reseau;creneau=15;tour=12;pas=60;bande=500-2500;version=3;date=2026-10-03 ».
+ * « #reseau;nom=TEST;creneau=15;tour=12;pas=60;bande=500-2500;version=3;date=2026-10-03 ».
  * Ligne d'en-tête tolérée. Doublon : la dernière ligne l'emporte.
  */
 
@@ -78,7 +78,7 @@ function unitSidc(unit) {
 }
 
 /** Réseau par défaut : créneaux de 15 s (une trame FT8 = 12,64 s), canaux au pas de 60 Hz. */
-const NET_DEFAULTS = { slotS: 15, round: 0, step: 60, bandMin: 500, bandMax: 2500, version: '', date: '' };
+const NET_DEFAULTS = { slotS: 15, round: 0, step: 60, bandMin: 500, bandMax: 2500, version: '', date: '', name: '' };
 const FREQ_MIN = 200, FREQ_MAX = 3000;   // canal accepté (Hz)
 const SLOT_MAX = 98;
 const SLOT_S_MIN = 13, SLOT_S_MAX = 600; // un créneau contient au moins une trame
@@ -101,6 +101,7 @@ function parseNetHeader(line) {
       const b = /^(\d+)-(\d+)$/.exec(v);
       if (b && +b[1] >= FREQ_MIN && +b[2] <= FREQ_MAX && +b[1] < +b[2]) { net.bandMin = +b[1]; net.bandMax = +b[2]; }
     } else if (k === 'version') net.version = v.slice(0, 20);
+    else if (k === 'nom') net.name = v.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 20);
     else if (k === 'date') net.date = v.slice(0, 20);
   }
   return net;
@@ -212,6 +213,26 @@ function lookupCall(directory, short) {
   return (directory && short && directory[short]) || short;
 }
 
+/**
+ * Annuaire de test générique, appliqué au premier lancement (aucun annuaire enregistré) :
+ * 12 stations, alphabet OTAN, types variés, canaux et créneaux attribués par `allocate`.
+ */
+const TEST_DIRECTORY = [
+  '#reseau;nom=TEST;creneau=15;tour=12;version=1;date=2026-10-03',
+  '01;ALPHA;commandement;compagnie;1400;1',
+  '02;BRAVO;infanterie;section;1460;2',
+  '03;CHARLIE;infanterie;section;1520;3',
+  '04;DELTA;reconnaissance;groupe;1580;4',
+  '05;ECHO;genie;section;1640;5',
+  '06;FOXTROT;sante;groupe;1700;6',
+  '07;GOLF;logistique;section;1760;7',
+  '08;HOTEL;transmissions;groupe;1820;8',
+  '09;INDIA;pompiers;;1880;9',
+  '10;JULIET;samu;;1940;10',
+  '11;KILO;police;;2000;11',
+  '12;LIMA;secours;;2060;12',
+].join('\n') + '\n';
+
 // ---------------- Création d'annuaire (outil de l'application) ----------------
 
 const CLEAN_BAND_MIN = 1400; // au-dessus : harmoniques des tons hors de la bande (tests/passband.js)
@@ -283,7 +304,9 @@ function echelonWord(code) {
  */
 function serializeDirectory(entries, net) {
   const n = Object.assign({}, NET_DEFAULTS, net || {});
-  const head = ['#reseau', 'creneau=' + n.slotS];
+  const head = ['#reseau'];
+  if (n.name) head.push('nom=' + n.name);
+  head.push('creneau=' + n.slotS);
   if (n.round) head.push('tour=' + n.round);
   if (n.step !== NET_DEFAULTS.step) head.push('pas=' + n.step);
   if (n.bandMin !== NET_DEFAULTS.bandMin || n.bandMax !== NET_DEFAULTS.bandMax) head.push('bande=' + n.bandMin + '-' + n.bandMax);
@@ -331,6 +354,6 @@ function directoryFromLink(link) {
 
 if (typeof module === 'object' && module.exports) {
   module.exports = { parseDirectory, lookupCall, parseUnitType, unitSidc, parseNetHeader, checkChannels, nextSlotStart,
-    channelPlan, allocate, serializeDirectory, toEntries, directoryLink, directoryFromLink,
+    channelPlan, allocate, serializeDirectory, toEntries, directoryLink, directoryFromLink, TEST_DIRECTORY,
     UNIT_TYPES, ECHELONS, NET_DEFAULTS, MIN_CHANNEL_GAP, SHORT_CALL_RE, LONG_CALL_RE };
 }

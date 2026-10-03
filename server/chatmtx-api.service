@@ -1,0 +1,26 @@
+[Unit]
+Description=ChatMTX : annuaires sur le serveur (/api/annuaire)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/chatmtx-api/annuaire-server.js
+Environment=PORT=8790 CHATMTX_DATA=/var/lib/chatmtx
+DynamicUser=yes
+StateDirectory=chatmtx
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+# Durcissement : rien d'autre que ses données
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

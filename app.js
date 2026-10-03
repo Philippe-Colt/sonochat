@@ -609,6 +609,7 @@
       apply: applyDirectoryText,
       share: nativeShare,
       isNative,
+      apiBase: isNative ? 'https://chatmtx.f4mtx.com/' : '', // application : fichiers locaux, serveur distant
     });
     importDirectoryLink();
     directoryFile.addEventListener('change', importDirectory);
@@ -1241,6 +1242,16 @@
 
   // === Annuaire ===
   function loadDirectory() {
+    // Jamais d'annuaire enregistré (premier lancement) : annuaire de test générique.
+    // Un annuaire effacé volontairement est enregistré vide et reste vide.
+    if (localStorage.getItem('sonochat-directory') === null) {
+      const r = parseDirectory(TEST_DIRECTORY);
+      directory = r.map;
+      directoryUnits = r.units;
+      directoryNet = { channels: r.channels, net: r.net };
+      saveDirectory();
+      return;
+    }
     try {
       const saved = localStorage.getItem('sonochat-directory');
       directory = saved ? JSON.parse(saved) : {};
@@ -1272,7 +1283,7 @@
       + ' (' + slot.slotS + ' s, tour ' + fmtDuration(slot.slotS * slot.round) + ')' : ''].filter(Boolean).join(', ') + '.' : '';
     directoryStatus.textContent = (n ? n + ' indicatif' + (n > 1 ? 's' : '') + ' dans l\'annuaire'
       + (t ? ', ' + t + ' avec type d\'unite' : '') + (c ? ', ' + c + ' avec canal ou creneau' : '')
-      + (net && (net.version || net.date) ? ' (version ' + [net.version, net.date].filter(Boolean).join(' du ') + ')' : '') : 'Annuaire vide')
+      + (net && (net.version || net.date) ? ' (' + (net.name ? 'reseau ' + net.name + ', ' : '') + 'version ' + [net.version, net.date].filter(Boolean).join(' du ') + ')' : '') : 'Annuaire vide')
       + (extra ? ' — ' + extra : '') + (mine ? ' ' + mine : '');
     btnDirectoryClear.disabled = n === 0;
   }

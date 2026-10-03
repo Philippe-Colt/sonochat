@@ -18,7 +18,8 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 - `qrcode.js` — Générateur de QR code (Kazuhiko Arase, licence MIT, non modifié)
 - `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long),
   création (`channelPlan`, `allocate`, `serializeDirectory`, `directoryLink`/`directoryFromLink`)
-- `directory-ui.js` — Outil de création d'annuaire (gros boutons, attribution, QR code, scan)
+- `directory-ui.js` — Outil de création d'annuaire (gros boutons, attribution, QR code, scan, serveur)
+- `server/annuaire-server.js` — Service des annuaires sur le serveur (Node sans dépendance, systemd)
 - `native-serial.js` — Application Android : `NativePttPort`, même interface que le `SerialPort`
   de Web Serial, au-dessus du plugin natif `UsbSerial`
 - `app.js` — Interface chat : relie modem ↔ SonoLink, bulles, indicatifs, spectre, historique localStorage
@@ -98,6 +99,23 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   permet ; permission CAMERA facultative dans l'APK), **COLLER** (lien ou fichier), ou appareil
   photo du téléphone → le lien ouvre ChatMTX dans le navigateur (`importDirectoryLink` : confirmation
   avec version et nombre de stations, adresse nettoyée).
+- **Annuaire de test** (`TEST_DIRECTORY`, réseau `TEST`) : 12 stations `01` ALPHA → `12` LIMA
+  (commandement, infanterie ×2, reco, génie, santé, logistique, transmissions, pompiers, SAMU,
+  police, secours), canaux 1 400 → 2 060 Hz, créneaux 1-12. **Appliqué au premier lancement**
+  (clé `sonochat-directory` absente) ; un annuaire effacé est enregistré vide et le reste.
+  Bouton **TEST** dans l'outil pour y revenir. En-tête : clé `nom=` (nom du réseau, `net.name`).
+- **Serveur** (outil → section Serveur ; `server/annuaire-server.js`, service `chatmtx-api`,
+  `/opt/chatmtx-api`, données `/var/lib/chatmtx/annuaires`, Caddy `reverse_proxy /api/*
+  127.0.0.1:8790`) : annuaire rangé sous un **nom de réseau** (3-20 car. `A-Z0-9_-`) et protégé
+  par un **code** (≥ 6 car.). Le premier envoi réserve le nom ; ensuite le code est exigé pour
+  charger comme pour remplacer (code faux et réseau inconnu : même 403). Code stocké en
+  empreinte scrypt salée, 20 versions précédentes gardées (`historique/`), fichier validé par
+  `parseDirectory`, 32 Ko max, 30 requêtes / 10 min et 10 codes faux / h par adresse
+  (`CF-Connecting-IP`), CORS ouvert (appli : `apiBase` = `https://chatmtx.f4mtx.com/`).
+  **ENVOYER** met le nom du réseau dans l'en-tête (nouvelle version), enregistre sur le serveur
+  et applique ici ; **CHARGER** applique celui du serveur. Nom et code mémorisés
+  (`chatmtx-directory-server`). `deploy.sh` appelle `server/install.sh` (copie si changé,
+  unité systemd durcie `DynamicUser`, ajout de la route Caddy avec sauvegarde du Caddyfile).
 - Traduction **à l'affichage seulement** (`data-call` sur chaque indicatif, `refreshCalls`) :
   l'historique garde le code court, un annuaire importé plus tard s'applique aussi aux anciens
   messages. Code inconnu → code court affiché.
@@ -322,8 +340,11 @@ node tests/loopback.js quick 3   # standard seul, rapide
 # Protocole SonoLink : 2 stations, canal simulé, horloge virtuelle, pertes forcées — ~1 s
 node tests/arq.js
 
-# Import d'annuaire, canaux/créneaux, attribution, fichier et lien de QR code
+# Import d'annuaire, canaux/créneaux, attribution, fichier et lien de QR code, annuaire de test
 node tests/directory.js
+
+# Service des annuaires (port et dossier temporaires) : codes, versions, limites
+node tests/annuaire-server.js
 
 # Messages formatés 9-line / MIST : codage, MGRS (référence publiée), texte en clair
 node tests/medevac.js

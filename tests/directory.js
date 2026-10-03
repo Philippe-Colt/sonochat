@@ -107,6 +107,15 @@ check('affichage : long si connu', lookupCall({ PC: 'F4MTX' }, 'PC') === 'F4MTX'
   check('lien relu (même encodé par l\'appareil photo)', D.directoryFromLink(link) === txt && D.directoryFromLink(encodeURI(link).replace(/;/g, '%3B')) === txt
     && D.directoryFromLink('https://exemple.fr/') === null);
 }
+{
+  const D = require('../directory.js');
+  const r = parseDirectory(D.TEST_DIRECTORY);
+  check('annuaire de test : 12 stations typées, canaux et créneaux, sans incohérence', r.imported === 12 && r.typed === 12
+    && Object.keys(r.channels).length === 12 && r.net.round === 12 && r.net.name === 'TEST' && r.warnings.length === 0, r.warnings);
+  const re = D.allocate(D.toEntries(r), r.net);
+  check('annuaire de test = attribution automatique', JSON.stringify(re.entries) === JSON.stringify(D.toEntries(r)));
+  check('annuaire de test relu à l\'identique', D.serializeDirectory(D.toEntries(r), r.net) === D.TEST_DIRECTORY, D.serializeDirectory(D.toEntries(r), r.net));
+}
 check('affichage : court sinon', lookupCall({ PC: 'F4MTX' }, 'AB') === 'AB' && lookupCall(null, 'AB') === 'AB');
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');

@@ -22,6 +22,7 @@
   // Settings elements
   const settingVolume = document.getElementById('setting-volume');
   const settingBaseFreq = document.getElementById('setting-base-freq');
+  const settingRxMode = document.getElementById('setting-rx-mode');
   const volumeVal = document.getElementById('volume-val');
   const btnClearHistory = document.getElementById('btn-clear-history');
 
@@ -145,7 +146,9 @@
 
   function initModem() {
     const settings = loadSettings();
-    modem = new FT8Modem({
+    // Réception : multifréquence (décodage large bande) ou fréquence unique (modem d'avant)
+    const Modem = settings.rxMode === 'single' && typeof FT8ModemSingle === 'function' ? FT8ModemSingle : FT8Modem;
+    modem = new Modem({
       baseFreq: txFreq(),
       volume: settings.volume / 100,
     });
@@ -706,6 +709,16 @@
     settingVolume.value = settings.volume;
     volumeVal.textContent = settings.volume + '%';
     settingBaseFreq.value = settings.baseFreq;
+    settingRxMode.value = settings.rxMode === 'single' ? 'single' : 'multi';
+    settingRxMode.addEventListener('change', () => {
+      if (modem.transmitting || link.busy) {
+        alert('Emission en cours : changer de mode a la fin de l\'envoi.');
+        settingRxMode.value = loadSettings().rxMode === 'single' ? 'single' : 'multi';
+        return;
+      }
+      saveAndApplySettings();
+      location.reload(); // nouveau modem (l'écoute est à relancer)
+    });
     settingPttSignal.value = settings.pttSignal || 'RTS';
     settingPttLevel.value = settings.pttActiveHigh !== false ? 'high' : 'low';
     settingPttLead.value = settings.pttLeadMs;
@@ -1127,7 +1140,56 @@
   }
 
   function drawSpectrum(freqData, sampleRate, fftSize) {
-    drawChannels(freqData, sampleRate, fftSize);
+    if (singleMode()) drawSpectrumSingle(freqData, sampleRate, fftSize);
+    else drawChannels(freqData, sampleRate, fftSize);
+  }
+
+  /** Mode fréquence unique : le spectre d'avant, 90 Hz autour de la fréquence de base. */
+  function drawSpectrumSingle(freqData, sampleRate, fftSize) {
+    const w = spectrumCanvas.width / window.devicePixelRatio;
+    const h = spectrumCanvas.height / window.devicePixelRatio;
+    const binWidth = sampleRate / fftSize;
+
+    spectrumCtx.fillStyle = '#16213e';
+    spectrumCtx.fillRect(0, 0, w, h);
+
+    // Show the FT8 band: baseFreq - 20 Hz to baseFreq + 70 Hz (~90 Hz window)
+    const freqMin = modem.baseFreq - 20;
+    const freqMax = modem.baseFreq + 70;
+    const binMin = Math.floor(freqMin / binWidth);
+    const binMax = Math.ceil(freqMax / binWidth);
+    const binRange = binMax - binMin;
+
+    // Frequency bars
+    const barWidth = w / binRange;
+    for (let i = 0; i < binRange; i++) {
+      const bin = binMin + i;
+      if (bin >= freqData.length) break;
+
+      const db = freqData[bin];
+      const normalized = Math.max(0, (db + 100) / 60);
+      const barHeight = normalized * h;
+      const x = i * barWidth;
+
+      const hue = 220 - normalized * 180;
+      spectrumCtx.fillStyle = `hsla(${hue}, 80%, 55%, 0.8)`;
+      spectrumCtx.fillRect(x, h - barHeight, barWidth + 0.5, barHeight);
+    }
+
+    // Mark the 8 FT8 tone frequencies
+    spectrumCtx.strokeStyle = 'rgba(233, 69, 96, 0.5)';
+    spectrumCtx.lineWidth = 1;
+    spectrumCtx.font = '8px sans-serif';
+    spectrumCtx.fillStyle = 'rgba(233, 69, 96, 0.7)';
+    for (let s = 0; s < 8; s++) {
+      const freq = modem.baseFreq + s * FT8.TONE_SPACING;
+      const x = ((freq - freqMin) / (freqMax - freqMin)) * w;
+      spectrumCtx.beginPath();
+      spectrumCtx.moveTo(x, 0);
+      spectrumCtx.lineTo(x, h);
+      spectrumCtx.stroke();
+      spectrumCtx.fillText(s.toString(), x + 2, 10);
+    }
   }
 
   function drawChannels(freqData, sampleRate, fftSize) {
@@ -1214,12 +1276,19 @@
   }
 
   function clearSpectrum() {
+    if (singleMode()) {
+      const w = spectrumCanvas.width / window.devicePixelRatio;
+      const h = spectrumCanvas.height / window.devicePixelRatio;
+      spectrumCtx.fillStyle = '#16213e';
+      spectrumCtx.fillRect(0, 0, w, h);
+      return;
+    }
     drawChannels(null);
   }
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', beaconOn: false, beaconMin: 10, beaconM: 500, pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
+    const defaults = { rxMode: 'multi', volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', beaconOn: false, beaconMin: 10, beaconM: 500, pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
@@ -1256,6 +1325,7 @@
       beaconM: parseInt(settingBeaconM.value, 10) || 0,
       contactFreq: settingContactFreq.value.trim(),
       medevacPeace: loadSettings().medevacPeace,
+      rxMode: settingRxMode.value === 'single' ? 'single' : 'multi',
       v: 3,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
@@ -1272,7 +1342,10 @@
   }
 
   /** Fréquence d'émission : canal de l'annuaire s'il y en a un, sinon réglage manuel. */
+  function singleMode() { return loadSettings().rxMode === 'single'; }
+
   function txFreq() {
+    if (singleMode()) return loadSettings().baseFreq; // fréquence unique : la même pour tous
     const ch = myChannel();
     return ch && ch.freq ? ch.freq : loadSettings().baseFreq;
   }
@@ -1300,13 +1373,14 @@
   }
 
   function updateChannelInfo() {
-    const ch = myChannel();
+    const ch = singleMode() ? null : myChannel();
     const fixed = !!(ch && ch.freq);
     settingBaseFreq.disabled = fixed;
     if (fixed) settingBaseFreq.value = ch.freq;
     else settingBaseFreq.value = loadSettings().baseFreq;
     if (baseFreqInfo) {
       baseFreqInfo.textContent = fixed ? 'Canal impose par l\'annuaire pour ' + (myCallsign() || '') + ' : ' + ch.freq + ' Hz.'
+        : singleMode() ? 'Mode frequence unique : toutes les stations emettent et recoivent sur cette frequence (1000 Hz conseille).'
         : 'Frequence audio du premier ton (le signal occupe 50 Hz au-dessus). Un canal dans l\'annuaire la remplace.';
     }
   }

@@ -139,6 +139,14 @@
                     <span id="volume-val">80%</span>
                 </div>
                 <div class="setting-group">
+                    <label for="setting-rx-mode">Reception</label>
+                    <select id="setting-rx-mode">
+                        <option value="multi">Multifrequence : plusieurs stations, canaux de l'annuaire</option>
+                        <option value="single">Frequence unique : mode d'avant, une seule frequence</option>
+                    </select>
+                    <p class="setting-info">Pour comparer sur le terrain. Frequence unique = le decodeur d'avant le multi-signal, a l'identique : toutes les stations sur la frequence ci-dessous, sans les canaux de l'annuaire ni la barre des canaux. Changer de mode recharge l'application ; les deux stations doivent etre dans le meme mode.</p>
+                </div>
+                <div class="setting-group">
                     <label>Frequence d'emission (Hz)</label>
                     <input type="number" id="setting-base-freq" min="500" max="3000" value="1000" step="50">
                     <p id="base-freq-info" class="setting-info"></p>
@@ -228,6 +236,7 @@
     </div>
 
     <script src="ft8-modem.js"></script>
+    <script src="ft8-modem-single.js"></script>
     <script src="arq.js"></script>
     <script src="directory.js"></script>
     <script src="native-serial.js"></script>

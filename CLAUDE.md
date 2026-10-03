@@ -10,6 +10,8 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 
 - `ft8-modem.js` — Couche radio FT8 : encodage/décodage, modulation GFSK, démodulation, LDPC, CRC-14.
   Aucune logique de dialogue : émet des listes de symboles, signale chaque trame décodée (`onFrame`)
+- `ft8-modem-single.js` — **Mode fréquence unique** : le modem d'avant le décodage large bande
+  (commit `eeb6e19`) à l'identique, renommé `FT8_SINGLE` / `FT8ModemSingle` pour cohabiter
 - `arq.js` — `SonoLink` : accusés de réception et répétitions (voir plus bas). Sans DOM ni audio
   (émission, horloge, minuteurs injectés), testable en Node
 - `medevac.js` — Messages formatés 9-line MEDEVAC et MIST : codage compact, MGRS, texte en clair.
@@ -282,6 +284,20 @@ villes françaises ≥ 10 000 hab.). Format compact (lon/lat arrondis, Douglas-P
 pays (zoom ≤ 7) et de villes selon leur rang et le zoom, 80 au plus. Régénération : script Python
 dans l'historique du commit « Fond monde embarqué ». Emplacements de tuiles vides masqués
 (`visibility: hidden`, sinon cadre gris). Grille MGRS à partir du zoom 6 seulement. Leaflet 1.9.4 vendorisé (`leaflet.js`, `leaflet.css`).
+
+## Mode de réception (paramètres → Réception)
+
+Pour comparer sur le terrain, `settings.rxMode` :
+- **Multifréquence** (`multi`, défaut) : `FT8Modem` (décodage large bande 12 kHz, canaux de
+  l'annuaire, OSD, détection des trames en cours, barre des canaux).
+- **Fréquence unique** (`single`) : `FT8ModemSingle` (`ft8-modem-single.js`), le décodeur d'avant
+  à l'identique — capture à 48 kHz, recherche à ±3 tons autour de `baseFreq`, 6 candidats par
+  passe, BP seule. Émission et réception sur la **fréquence de base** des paramètres (canaux de
+  l'annuaire ignorés, `txFreq`), ancien spectre de 90 Hz (`drawSpectrumSingle`). Méthodes
+  ajoutées vides : `channelBusy` (faux : seule la protection SonoLink `_rxInProgress` reste
+  contre l'émission par-dessus une réception), `rxActivity`, `setChannels`. Les créneaux de
+  balise de l'annuaire restent appliqués. Les deux stations doivent être dans le même mode.
+- Changer de mode enregistre et **recharge** l'application (nouveau modem ; refusé pendant un envoi).
 
 ## Barre des canaux (au-dessus de la saisie)
 

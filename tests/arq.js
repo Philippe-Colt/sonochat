@@ -47,6 +47,10 @@ function makeStation(sim, name, opts = {}) {
     now: sim.now, setTimer: sim.setTimer, clearTimer: sim.clearTimer,
     ackEnabled: (text) => (typeof st.ackEnabled === 'function' ? st.ackEnabled(text) : st.ackEnabled),
     callsign: () => opts.call || '',
+    // Comme le modem : trame d'une autre station repérée ~1,5 s après son début, jusqu'à la
+    // passe qui la décode
+    channelBusy: () => (st.peers || [st.peer]).filter(Boolean).some((p) => p.sent.some((x) =>
+      sim.t > x.start + 1.5 && sim.t < x.end + 4 * SYM + DECODE_LATENCY + 0.01)),
     abort: () => { aborted = true; },
     transmit: (frames, o = {}) => new Promise((resolve) => {
       aborted = false;
@@ -389,6 +393,49 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     await s2.flush();
     check('pas de balise pendant un envoi', rb === false, String(rb));
     await s2.runUntil(() => r1 !== null);
+  }
+
+  console.log('Plusieurs stations simultanées');
+  {
+    const { sim, B } = pair();
+    const ext = (t, abs, freq, cont) => ({ text: t.join(''), telemetry: null, ext: true, blocks: t, continues: cont, absPos: abs, sampleRate: SR, freq });
+    // Deux étendus de 2 blocs, départs à 0,2 s d'écart, fréquences 1 400 et 1 460 Hz
+    B.link.handleFrame(ext(['PCXYPREMIER M', 'ESSAGE A'], 1000000, 1400, false));
+    B.link.handleFrame(ext(['ZZXYSECOND ME', 'SSAGE B'], 1000000 + Math.round(0.2 * SR), 1460, false));
+    await sim.runUntil(() => false, sim.t + 60);
+    const texts = doneMsgs(B).map((m) => m.text).sort();
+    check('deux étendus simultanés sur 2 fréquences : deux messages, non mélangés', texts.length === 2
+      && texts[0] === 'PCXYPREMIER MESSAGE A' && texts[1] === 'ZZXYSECOND MESSAGE B', texts.join(' | '));
+  }
+
+  console.log('Pas d\'émission pendant une réception');
+  {
+    // A écrit à B ; C (qui n'entend pas A) diffuse un long étendu pendant ce temps.
+    // B doit attendre la fin de C et l'avoir décodé avant d'accuser ; A, qui entend
+    // C, prolonge son attente d'accusé au lieu de répéter.
+    const { sim, A, B, C } = trio();
+    C.link.channelBusy = () => false;
+    const LONGC = 'CC99' + 'DIFFUSION LONGUE PENDANT LECHANGE DE A ET B';
+    sim.setTimer(() => C.link.send(LONGC, FT8.MODE_EXTENDED, { ack: false }), 8000);
+    const r = await exchange(sim, A, 'PABBBONJOUR', FT8.MODE_STANDARD, true, 'BB');
+    const cEnd = Math.max(...C.sent.map((x) => x.end));
+    const bAck = B.sent.find((x) => isAck(x.f));
+    check('B accuse après la fin de la diffusion de C', bAck && bAck.start >= cEnd, bAck && `ack ${bAck.start.toFixed(1)} s, fin C ${cEnd.toFixed(1)} s`);
+    check('B a décodé le message de C', doneMsgs(B).some((m) => m.text === LONGC), doneMsgs(B).map((m) => m.text).join(' | '));
+    check('A confirmé sans répétition (attente prolongée)', r.status === 'confirmed' && retries(A).length === 0, `${r.status}, ${retries(A).length} répétition(s)`);
+    check('A n\'a rien différé (pas d\'émission en attente pendant C)', !A.txEvents.some((e) => e.state === 'channel'));
+  }
+  {
+    // B veut écrire pendant que C diffuse : son envoi part après la fin de C.
+    const { sim, B, C } = trio();
+    const LONGC = 'CC99' + 'UNE AUTRE DIFFUSION LONGUE EN COURS';
+    C.link.send(LONGC, FT8.MODE_EXTENDED, { ack: false });
+    let r = null;
+    sim.setTimer(() => B.link.send('BBPAMESSAGE', FT8.MODE_STANDARD, { ack: false }).then((x) => { r = x; }), 6000);
+    await sim.runUntil(() => r !== null);
+    const cEnd = Math.max(...C.sent.map((x) => x.end));
+    check('envoi de B différé après la diffusion de C, et C décodé avant', B.sent.length === 1 && B.sent[0].start >= cEnd
+      && doneMsgs(B).some((m) => m.text === LONGC), B.sent.length && `B à ${B.sent[0].start.toFixed(1)} s, fin C ${cEnd.toFixed(1)} s`);
   }
 
   console.log('Pertes en début de message');

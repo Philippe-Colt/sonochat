@@ -63,7 +63,21 @@ const FT8 = {
   EXTENDED_MAX_BLOCKS: 10,
 
   // Reception
-  RX_MAX_CANDIDATES: 6,          // distinct time slots refined + decoded per pass
+  RX_MAX_CANDIDATES: 20,         // cases (temps, fréquence) distinctes affinées + décodées par passe
+  RX_RATE: 12000,                // Hz : capture décimée (48 kHz / 4)
+  RX_BAND_MIN: 200,              // Hz : recherche large bande (plusieurs stations simultanées)
+  RX_BAND_MAX: 3000,
+  RX_MIN_FREQ_GAP: 30,           // Hz : en dessous, même signal (une trame fait 50 Hz)
+  RX_SEARCH_WINDOW: 40,          // s : départs de trame cherchés (une trame se décode dès qu'elle est finie)
+  // Score de synchro minimal d'un candidat large bande (mesuré à 12 kHz : maximum du
+  // bruit 13-17 sur ~900 demi-raies × 500 lignes, signal décodable à -18 dB 27-35)
+  RX_COARSE_MIN_SCORE: 15,
+  // Trame en cours de réception (pas encore décodable) : synchro partielle sur 1 ou 2
+  // blocs Costas (maximum du bruit mesuré 11 et 12), puis tons de données présents
+  RX_BUSY_SCORE_1: 12,
+  RX_BUSY_SCORE_2: 17,
+  RX_BUSY_DATA_SYMBOLS: 12,
+  RX_BUSY_CONTRAST: 3.1,
   // < 36: an extended frame has a Costas every 36 symbols, so a half-block
   // shifted window syncs as well as the true one and must not suppress it
   RX_MIN_CANDIDATE_SPACING: 20,  // symbols between two candidates of a pass
@@ -259,6 +273,70 @@ const FT8 = {
 // ============================================================
 // FT8 Modem Class
 // ============================================================
+
+// ============================================================
+// FFT de longueur quelconque (Cooley-Tukey récursif, facteurs premiers
+// quelconques) : le spectre d'un symbole doit avoir des raies tombant
+// exactement sur les tons (pas 6,25 Hz), donc une longueur nsps = 0,16 s
+// d'échantillons (1 920 à 12 kHz = 2^7·3·5, 7 056 à 44,1 kHz = 2^4·3^2·7^2).
+// ============================================================
+
+const _fftCache = new Map(); // n -> {factors, cos, sin}
+
+function _fftPlan(n) {
+  let plan = _fftCache.get(n);
+  if (plan) return plan;
+  const factors = [];
+  let m = n;
+  for (let f = 2; f * f <= m; f++) while (m % f === 0) { factors.push(f); m /= f; }
+  if (m > 1) factors.push(m);
+  const cos = new Float64Array(n), sin = new Float64Array(n);
+  for (let k = 0; k < n; k++) { cos[k] = Math.cos(-2 * Math.PI * k / n); sin[k] = Math.sin(-2 * Math.PI * k / n); }
+  plan = { factors, cos, sin };
+  _fftCache.set(n, plan);
+  return plan;
+}
+
+/**
+ * FFT complexe en place sur (re, im) de longueur n, entrées espacées de `stride`
+ * à partir de `off` ; sortie dans (outRe, outIm) à partir de 0.
+ */
+function _fftRec(re, im, off, stride, n, outRe, outIm, plan, N, fi) {
+  if (n === 1) { outRe[0] = re[off]; outIm[0] = im[off]; return; }
+  const p = plan.factors[fi], m = n / p;
+  // p sous-transformées de longueur m
+  const subRe = [], subIm = [];
+  for (let r = 0; r < p; r++) {
+    const sr = new Float64Array(m), si = new Float64Array(m);
+    _fftRec(re, im, off + r * stride, stride * p, m, sr, si, plan, N, fi + 1);
+    subRe.push(sr); subIm.push(si);
+  }
+  const step = N / n; // racine n-ième = racine N-ième à la puissance N/n
+  for (let k = 0; k < m; k++) {
+    for (let q = 0; q < p; q++) {
+      const kk = k + m * q;
+      let ar = 0, ai = 0;
+      for (let r = 0; r < p; r++) {
+        const w = ((r * kk) % n) * step;
+        const c = plan.cos[w], s = plan.sin[w];
+        const xr = subRe[r][k], xi = subIm[r][k];
+        ar += xr * c - xi * s;
+        ai += xr * s + xi * c;
+      }
+      outRe[kk] = ar; outIm[kk] = ai;
+    }
+  }
+}
+
+/** Puissances |X[k]|² des raies k0..k1 du signal réel x (longueur n). */
+function _fftPowers(x, k0, k1) {
+  const n = x.length, plan = _fftPlan(n);
+  const im = new Float64Array(n), oRe = new Float64Array(n), oIm = new Float64Array(n);
+  _fftRec(x, im, 0, 1, n, oRe, oIm, plan, n, 0);
+  const out = new Float32Array(k1 - k0 + 1);
+  for (let k = k0; k <= k1; k++) out[k - k0] = oRe[k] * oRe[k] + oIm[k] * oIm[k];
+  return out;
+}
 
 class FT8Modem {
 
@@ -946,8 +1024,14 @@ class FT8Modem {
     if (this.listening) return;
 
     const ctx = this._ensureAudioContext();
-    const sampleRate = ctx.sampleRate;
+    // Capture réduite à ~12 kHz (48 kHz / 4) : le signal FT8 tient sous 3 kHz, tout le
+    // décodage large bande coûte 4 fois moins. Filtre anti-repliement avant décimation.
+    const D = Math.max(1, Math.round(ctx.sampleRate / FT8.RX_RATE));
+    const sampleRate = ctx.sampleRate / D;
     this._nsps = Math.round(sampleRate * FT8.SYMBOL_PERIOD);
+    const fir = FT8Modem.decimationFilter(ctx.sampleRate, D);
+    const T = fir.length, hist = new Float32Array(T);
+    let hpos = 0, phase = 0;
 
     // Ring buffer: sized for extended frames (up to 10 blocks * 72 sym * 0.16s = 115s + margin)
     const maxDuration = 15 + FT8.EXTENDED_MAX_BLOCKS * FT8.EXTENDED_BLOCK_SYMBOLS * FT8.SYMBOL_PERIOD;
@@ -983,11 +1067,19 @@ class FT8Modem {
       // Pendant notre propre emission, le micro entend le haut-parleur : on
       // ecrit du silence pour ne pas decoder nos trames (ni nos accuses).
       const mute = this.transmitting || performance.now() < this._muteUntil;
+      let written = 0;
       for (let i = 0; i < input.length; i++) {
-        this._ringBuffer[this._ringWritePos] = mute ? 0 : input[i];
+        hist[hpos] = input[i];
+        hpos = hpos + 1 === T ? 0 : hpos + 1;
+        if (++phase < D) continue;
+        phase = 0;
+        let acc = 0, idx = hpos;
+        for (let k = 0; k < T; k++) { idx = idx === 0 ? T - 1 : idx - 1; acc += fir[k] * hist[idx]; }
+        this._ringBuffer[this._ringWritePos] = mute ? 0 : acc;
         this._ringWritePos = (this._ringWritePos + 1) % this._ringBufferLen;
+        written++;
       }
-      this._absWritten += input.length;
+      this._absWritten += written;
       // Pass through silence (required for ScriptProcessor to work)
       e.outputBuffer.getChannelData(0).fill(0);
     };
@@ -999,6 +1091,26 @@ class FT8Modem {
     if (this.onStatusChange) this.onStatusChange('listening');
 
     this._startDecoding();
+  }
+
+  /**
+   * Filtre passe-bas (sinus cardinal fenêtré de Blackman) pour décimer par D :
+   * coupure à 0,4 × la fréquence décimée (4,8 kHz pour 12 kHz), bande FT8 intacte.
+   */
+  static decimationFilter(rate, D) {
+    if (D <= 1) return new Float32Array([1]);
+    const T = 16 * D + 1, fc = 0.4 / D, mid = (T - 1) / 2;
+    const h = new Float32Array(T);
+    let sum = 0;
+    for (let k = 0; k < T; k++) {
+      const x = k - mid;
+      const sinc = x === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * x) / (Math.PI * x);
+      const w = 0.42 - 0.5 * Math.cos(2 * Math.PI * k / (T - 1)) + 0.08 * Math.cos(4 * Math.PI * k / (T - 1));
+      h[k] = sinc * w;
+      sum += h[k];
+    }
+    for (let k = 0; k < T; k++) h[k] /= sum;
+    return h;
   }
 
   /**
@@ -1201,106 +1313,86 @@ class FT8Modem {
     let energy = 0;
     for (let i = 0; i < audio.length; i++) energy += audio[i] * audio[i];
     const rms = Math.sqrt(energy / audio.length);
-    if (energy / audio.length < 1e-8) return; // silence
+    if (energy / audio.length < 1e-8) { this._rxBusy = false; return; } // silence
 
     // ================================================================
-    // PASS 1: Precompute Goertzel power at symbol-aligned positions
+    // PASS 1 : spectre large bande (FFT par symbole), lignes alignées sur la
+    // position absolue et gardées d'une passe à l'autre : seules les lignes
+    // nouvelles sont calculées. Raies au pas exact de 6,25 Hz (= un ton).
     // ================================================================
-    // Tone spacing = 6.25 Hz = 1 bin. Search ±3 bins = ±18.75 Hz.
-    // Total bins: 8 tones + 6 margin = 14 bins.
     const binWidth = sampleRate / nsps; // 6.25 Hz
-    const searchBins = 3; // ±3 bins = ±18.75 Hz
-    const numBins = 8 + 2 * searchBins; // 14
-    const k0 = this.baseFreq / binWidth - searchBins; // lowest bin
-
-    // Precompute Goertzel coefficients for all 14 bins
-    const twoPi = 2.0 * Math.PI;
-    const allCoeffs = new Float64Array(numBins);
-    for (let b = 0; b < numBins; b++) {
-      allCoeffs[b] = 2.0 * Math.cos(twoPi * (k0 + b) / nsps);
-    }
-
-    const numPos = Math.floor(audio.length / nsps);
-    // Flat array: power[pos * numBins + bin]
-    const power = new Float64Array(numPos * numBins);
-    const win = this._toneWindow;
-
-    for (let pos = 0; pos < numPos; pos++) {
-      const off = pos * nsps;
-      if (off + nsps > audio.length) break;
-
-      for (let b = 0; b < numBins; b++) {
-        const coeff = allCoeffs[b];
-        let s1 = 0, s2 = 0;
-        for (let n = 0; n < nsps; n++) {
-          const s0 = audio[off + n] * win[n] + coeff * s1 - s2;
-          s2 = s1;
-          s1 = s0;
-        }
-        power[pos * numBins + b] = s1 * s1 + s2 * s2 - coeff * s1 * s2;
-      }
-
-      if (pos % 12 === 0) await this._yieldToBrowser();
-    }
+    const kLo = Math.max(1, Math.floor(FT8.RX_BAND_MIN / binWidth));
+    const kHi = Math.min(Math.floor(nsps / 2) - 1, Math.ceil(FT8.RX_BAND_MAX / binWidth) + 7);
+    const numBins = kHi - kLo + 1;
+    const spec = this._spectrogram(audio, absStart, nsps, sampleRate, kLo, kHi);
+    if (!spec) return;
+    const { rows, row0, off0 } = spec; // rows[r] : demi-raies 2kLo..2kHi, ligne r (absolue row0 + r) à off0 + r·nsps/2
+    await this._yieldToBrowser();
 
     const t1 = performance.now();
 
-    // Frames already decoded (by absolute position) are excluded from the
-    // search: an old frame is never emitted twice, never starves a new one,
-    // and the same frame repeated later (ARQ) is a new position, so decoded.
+    // Trames déjà décodées (position absolue ET fréquence) exclues de la recherche :
+    // une vieille trame n'est jamais réémise, une répétition (ARQ) est une nouvelle
+    // position, et une autre station au même instant sur une autre fréquence passe.
     const frameLen = FT8.NUM_SYMBOLS * nsps;
     this._pruneSpans(absStart);
-    const covered = (off) => this._isCovered(absStart + off + frameLen / 2);
+    const covered = (off, freq0) => this._isCovered(absStart + off + frameLen / 2, freq0);
 
     // ================================================================
-    // PASS 2: Coarse Costas search (pure lookups on power matrix)
+    // PASS 2 : recherche Costas temps × fréquence sur toute la bande, limitée
+    // aux trames finies depuis peu (une trame se décode dès qu'elle est complète)
     // ================================================================
-    const maxStartPos = numPos - FT8.NUM_SYMBOLS;
-    if (maxStartPos < 1) return;
-
+    const nRows = rows.length;
+    const maxStart = nRows - 2 * (FT8.NUM_SYMBOLS - 1) - 1;
+    if (maxStart < 0) {
+      this._rxBusy = this._framesInProgress(rows, kLo, binWidth, maxStart).length > 0;
+      this._rxBusyAt = performance.now();
+      return;
+    }
+    const minStart = Math.max(0, maxStart - Math.ceil(2 * FT8.RX_SEARCH_WINDOW / FT8.SYMBOL_PERIOD));
     const syncPositions = [0, 36, 72];
     const coarseAll = [];
-
-    // Test each frequency shift (in whole bins = 6.25 Hz steps)
-    for (let binShift = -searchBins; binShift <= searchBins; binShift++) {
-      const toneBase = searchBins + binShift; // first tone index in power array
-
-      for (let sp = 0; sp <= maxStartPos; sp++) {
-        let score = 0;
-
-        for (let si = 0; si < 3; si++) {
-          const syncStart = syncPositions[si];
-          for (let i = 0; i < 7; i++) {
-            const base = (sp + syncStart + i) * numBins;
-            const expected = FT8.COSTAS[i];
-            const sigP = power[base + toneBase + expected];
-            let noiseP = 0;
-            for (let t = 0; t < 8; t++) {
-              if (t !== expected) noiseP += power[base + toneBase + t];
-            }
-            const meanNoise = noiseP / 7;
-            if (meanNoise > 0) {
-              score += Math.log(sigP / meanNoise + 1e-10);
-            } else if (sigP > 0) {
-              score += 10;
+    const lastBase = 2 * (numBins - 8); // demi-raies ; ton t à b + 2t
+    // Contribution Costas : log(p[ton attendu] / moyenne des 7 autres), comme l'affinage.
+    // Scores gardés par ligne de départ : une passe ne calcule que les départs nouveaux.
+    let fresh = 0;
+    for (let sp = minStart; sp <= maxStart; sp++) {
+      let list = this._coarseCache.get(row0 + sp);
+      if (!list) {
+        list = [];
+        for (let b = 0; b <= lastBase; b++) {
+          let score = 0;
+          for (let si = 0; si < 3; si++) {
+            for (let i = 0; i < 7; i++) {
+              const row = rows[sp + 2 * (syncPositions[si] + i)];
+              const sigP = row.p[b + 2 * FT8.COSTAS[i]];
+              const meanNoise = (row.sum[b] - sigP) / 7;
+              if (meanNoise > 0) score += Math.log(sigP / meanNoise + 1e-10);
+              else if (sigP > 0) score += 10;
             }
           }
+          if (score > FT8.RX_COARSE_MIN_SCORE) list.push({ b, score });
         }
-
-        if (score > 4.0 && !covered(sp * nsps)) {
-          const fHz = binShift * binWidth;
-          coarseAll.push({ sampleOff: sp * nsps, sp, fHz, freq0: this.baseFreq + fHz, score });
-        }
+        this._coarseCache.set(row0 + sp, list);
+        if (++fresh % 60 === 0) await this._yieldToBrowser();
+      }
+      for (const c of list) {
+        const key = (row0 + sp) + ':' + c.b;
+        if (this._tried.has(key)) continue; // déjà affiné sans succès : l'audio ne changera pas
+        const freq0 = (kLo + c.b / 2) * binWidth;
+        const sampleOff = off0 + sp * nsps / 2;
+        if (sampleOff >= 0 && !covered(sampleOff, freq0)) coarseAll.push({ sampleOff, sp, b: c.b, freq0, score: c.score, key, row: row0 + sp });
       }
     }
 
-    // Keep the best candidate of each distinct time slot (non-maximum
-    // suppression), so several frames present in the buffer are all tried.
+    // Meilleur candidat de chaque case (temps, fréquence) distincte : plusieurs
+    // stations au même instant sur des fréquences différentes sont toutes essayées.
     coarseAll.sort((a, b) => b.score - a.score);
     const coarseCandidates = [];
+    const minBinGap = Math.round(2 * FT8.RX_MIN_FREQ_GAP / binWidth);
     for (const c of coarseAll) {
       if (coarseCandidates.length >= FT8.RX_MAX_CANDIDATES) break;
-      if (coarseCandidates.every(o => Math.abs(o.sp - c.sp) >= FT8.RX_MIN_CANDIDATE_SPACING)) {
+      if (coarseCandidates.every(o => Math.abs(o.sp - c.sp) >= 2 * FT8.RX_MIN_CANDIDATE_SPACING || Math.abs(o.b - c.b) >= minBinGap)) {
         coarseCandidates.push(c);
       }
     }
@@ -1308,10 +1400,14 @@ class FT8Modem {
     const t2 = performance.now();
 
     if (coarseCandidates.length === 0) {
-      console.log('[FT8 RX] no candidates (' + (t1 - t0 | 0) + 'ms precompute, ' + (t2 - t1 | 0) + 'ms search, RMS=' + rms.toFixed(4) + ')');
+      const onAir = this._framesInProgress(rows, kLo, binWidth, maxStart);
+      this._rxBusy = onAir.length > 0;
+      this._rxBusyAt = performance.now();
+      if (onAir.length) console.log('[FT8 RX] trame en cours de réception à ' + onAir.map(f => f.freq0.toFixed(0)).join(', ') + ' Hz');
+      console.log('[FT8 RX] no candidates (' + (t1 - t0 | 0) + 'ms spectre, ' + (t2 - t1 | 0) + 'ms recherche, RMS=' + rms.toFixed(4) + ')');
       return;
     }
-    console.log('[FT8 RX] ' + coarseCandidates.length + ' coarse (best=' + coarseCandidates[0].score.toFixed(0) + ' fHz=' + coarseCandidates[0].fHz.toFixed(0) + ') ' + (t2 - t0 | 0) + 'ms');
+    console.log('[FT8 RX] ' + coarseCandidates.length + ' candidats (meilleur=' + coarseCandidates[0].score.toFixed(0) + ' à ' + coarseCandidates[0].freq0.toFixed(0) + ' Hz) ' + (t2 - t0 | 0) + 'ms');
 
     await this._yieldToBrowser();
 
@@ -1320,21 +1416,21 @@ class FT8Modem {
     // ================================================================
     const fineTimeStep = Math.max(1, Math.round(nsps / 4));
     const fineFreqStep = 1.0; // Hz
-    const fineTimeRange = nsps;
-    const fineFreqRange = binWidth / 2 + 1; // ±4.125 Hz
+    const fineTimeRange = nsps / 2;          // grille grossière au ½ symbole
+    const fineFreqRange = binWidth / 4 + 1;  // ±2,6 Hz : grille au ½ pas (3,125 Hz)
     const NUM_FINE = 2;
-    const failures = [];
 
+    let stillOnAir = false, pendingTail = false;
     for (const coarse of coarseCandidates) {
       // A previous candidate of this pass (e.g. an extended frame) may cover it
-      if (covered(coarse.sampleOff)) continue;
+      if (covered(coarse.sampleOff, coarse.freq0)) continue;
 
       const fineCandidates = [];
       const tMin = Math.max(0, coarse.sampleOff - fineTimeRange);
       const tMax = Math.min(audio.length - frameLen, coarse.sampleOff + fineTimeRange);
 
-      const keep = (sOff, fHz, score) => {
-        const entry = { sampleOff: sOff, fHz, freq0: this.baseFreq + fHz, score };
+      const keep = (sOff, freq0, score) => {
+        const entry = { sampleOff: sOff, freq0, score };
         if (fineCandidates.length < NUM_FINE) {
           fineCandidates.push(entry);
         } else if (score > fineCandidates[NUM_FINE - 1].score) {
@@ -1348,17 +1444,17 @@ class FT8Modem {
       // Separable search (frequency at the coarse time, then time at the best
       // frequency): 18 Costas evaluations instead of 81, several candidates
       // per pass stay affordable on a phone.
-      let bestF = coarse.fHz, bestFScore = -Infinity;
-      for (let fHz = coarse.fHz - fineFreqRange; fHz <= coarse.fHz + fineFreqRange; fHz += fineFreqStep) {
-        const score = this._costasScoreGoertzel(audio, sampleRate, nsps, coarse.sampleOff, this.baseFreq + fHz);
-        if (score > bestFScore) { bestFScore = score; bestF = fHz; }
+      let bestF = coarse.freq0, bestFScore = -Infinity;
+      for (let f = coarse.freq0 - fineFreqRange; f <= coarse.freq0 + fineFreqRange; f += fineFreqStep) {
+        const score = this._costasScoreGoertzel(audio, sampleRate, nsps, coarse.sampleOff, f);
+        if (score > bestFScore) { bestFScore = score; bestF = f; }
       }
       for (let sOff = tMin; sOff <= tMax; sOff += fineTimeStep) {
-        keep(sOff, bestF, this._costasScoreGoertzel(audio, sampleRate, nsps, sOff, this.baseFreq + bestF));
+        keep(sOff, bestF, this._costasScoreGoertzel(audio, sampleRate, nsps, sOff, bestF));
       }
       await this._yieldToBrowser();
 
-      let decoded = false;
+      let decoded = false, retry = false;
       for (const cand of fineCandidates) {
         const refinedFreq0 = this._refineFrequencyGoertzel(
           audio, sampleRate, nsps, cand.sampleOff, cand.freq0
@@ -1390,8 +1486,9 @@ class FT8Modem {
         // complete; the receiver must not answer while the sender still talks.
         if (text !== null) {
           const cont = this._signalContinues(audio, sampleRate, nsps, spanEnd - frameLen, refinedFreq0);
-          if (cont === null) break; // tail not captured yet: retry next pass
+          if (cont === null) { retry = true; pendingTail = true; break; } // tail not captured yet: retry next pass
           frame.continues = cont;
+          if (cont) stillOnAir = true;
         } else {
           frame.continues = false;
         }
@@ -1399,17 +1496,24 @@ class FT8Modem {
         frame.absPos = absStart + spanStart;
         frame.absEnd = absStart + spanEnd;
         frame.sampleRate = sampleRate;
-        this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd });
+        frame.freq = refinedFreq0;
+        this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd, freq: refinedFreq0 });
 
         const elapsed = performance.now() - t0;
         console.log('[FT8 RX] ' + (frame.ext ? 'EXTENDED (' + frame.blocks.length + ' blocs)' : text !== null ? 'TEXT' : 'TELEMETRY')
-          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' in ' + (elapsed | 0) + 'ms');
+          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' à ' + refinedFreq0.toFixed(1) + ' Hz in ' + (elapsed | 0) + 'ms');
         if (this.onFrame) this.onFrame(frame);
         decoded = true;
         break;
       }
 
-      if (!decoded && fineCandidates.length > 0) failures.push(fineCandidates[0]);
+      if (!decoded && !retry) {
+        this._tried.set(coarse.key, coarse.row);
+        const best = fineCandidates[0];
+        if (best && best.score >= FT8.RX_UNDECODED_MIN_SCORE) {
+          this._pendingFail.push({ absPos: absStart + best.sampleOff, freq0: best.freq0, score: best.score });
+        }
+      }
     }
 
     // Strong sync but no valid codeword: a frame was there and was lost.
@@ -1418,17 +1522,81 @@ class FT8Modem {
     // in the past, and only if the signal has stopped after it: a window
     // shifted by 36 symbols over a frame still being received syncs strongly
     // too, and answering it would talk over the sender.
-    for (const best of failures) {
-      const absPos = absStart + best.sampleOff;
+    // Échecs forts suivis d'une passe à l'autre (une case n'est affinée qu'une fois) :
+    // examinés une fois « posés » (signal arrêté après eux), puis oubliés.
+    const keepPending = [];
+    for (const best of this._pendingFail) {
+      const absPos = best.absPos, sampleOff = absPos - absStart;
+      if (sampleOff < 0) continue;
       const settled = absPos + frameLen <= this._absWritten - FT8.RX_UNDECODED_SETTLE * sampleRate;
-      if (best.score >= FT8.RX_UNDECODED_MIN_SCORE && settled && !covered(best.sampleOff)
-          && !this._reportedUndecoded.some(p => Math.abs(p - absPos) < frameLen / 2)
-          && this._signalContinues(audio, sampleRate, nsps, best.sampleOff, best.freq0) === false) {
-        this._reportedUndecoded.push(absPos);
-        console.log('[FT8 RX] undecoded strong frame (score=' + best.score.toFixed(0) + ')');
-        if (this.onUndecoded) this.onUndecoded({ absPos, score: best.score, sampleRate });
+      if (!settled) { keepPending.push(best); continue; }
+      if (!covered(sampleOff, best.freq0)
+          && !this._reportedUndecoded.some(p => Math.abs(p.pos - absPos) < frameLen / 2 && Math.abs(p.freq - best.freq0) < FT8.RX_MIN_FREQ_GAP)
+          && this._signalContinues(audio, sampleRate, nsps, sampleOff, best.freq0) === false) {
+        this._reportedUndecoded.push({ pos: absPos, freq: best.freq0 });
+        console.log('[FT8 RX] undecoded strong frame (score=' + best.score.toFixed(0) + ', ' + best.freq0.toFixed(0) + ' Hz)');
+        if (this.onUndecoded) this.onUndecoded({ absPos, score: best.score, sampleRate, freq: best.freq0 });
       }
     }
+    this._pendingFail = keepPending;
+
+    // Réception en cours : trame déjà décodée qui continue (étendu), trame finie dont la
+    // traîne n'est pas captée, ou trame commencée mais pas finie (synchro partielle).
+    const onAir = stillOnAir || pendingTail ? [] : this._framesInProgress(rows, kLo, binWidth, maxStart);
+    this._rxBusy = stillOnAir || pendingTail || onAir.length > 0;
+    this._rxBusyAt = performance.now();
+    if (onAir.length) console.log('[FT8 RX] trame en cours de réception à ' + onAir.map(f => f.freq0.toFixed(0)).join(', ') + ' Hz');
+  }
+
+  /**
+   * Trames commencées mais pas encore finies, donc pas décodables : fenêtres de
+   * départ trop récentes pour 79 symboles, dont les blocs Costas déjà reçus (1 ou 2)
+   * synchronisent, et dont les tons de données suivent le dernier Costas (sinon c'est
+   * la fin d'une trame terminée). Elles empêchent de parler par-dessus.
+   * @returns {{freq0, score}[]}
+   */
+  _framesInProgress(rows, kLo, binWidth, maxStart) {
+    const n = rows.length, found = [];
+    const lastBase = rows.length ? rows[0].sum.length - 1 : -1;
+    const from = Math.max(0, maxStart + 1);
+    for (let sp = from; sp + 2 * 6 < n; sp++) {
+      const nb = sp + 2 * (36 + 6) < n ? 2 : 1;
+      const lastCostasEnd = sp + 2 * ((nb - 1) * 36 + 7); // ligne du 1er symbole après le dernier Costas reçu
+      const dataRows = Math.min(FT8.RX_BUSY_DATA_SYMBOLS, Math.floor((n - 1 - lastCostasEnd) / 2) + 1);
+      const thr = nb === 2 ? FT8.RX_BUSY_SCORE_2 : FT8.RX_BUSY_SCORE_1;
+      for (let b = 0; b <= lastBase; b++) {
+        let score = 0;
+        for (let k = 0; k < nb; k++) {
+          for (let i = 0; i < 7; i++) {
+            const row = rows[sp + 2 * (36 * k + i)];
+            const sigP = row.p[b + 2 * FT8.COSTAS[i]];
+            const meanNoise = (row.sum[b] - sigP) / 7;
+            // Ligne muette (micro coupé pendant notre émission, début de capture) : pas un signal
+            score += meanNoise > 0 ? Math.log(sigP / meanNoise + 1e-10) : -Infinity;
+          }
+        }
+        if (!(score >= thr)) continue;
+        // Données après le dernier Costas : contraste max/moyenne des 8 tons
+        if (dataRows >= 4) {
+          let c = 0;
+          for (let d = 0; d < dataRows; d++) {
+            const row = rows[lastCostasEnd + 2 * d];
+            let mx = 0;
+            for (let t = 0; t < 8; t++) mx = Math.max(mx, row.p[b + 2 * t]);
+            c += row.sum[b] > 0 ? mx / (row.sum[b] / 8) : 0;
+          }
+          if (c / dataRows < FT8.RX_BUSY_CONTRAST) continue;
+        }
+        const freq0 = (kLo + b / 2) * binWidth;
+        if (!found.some(f => Math.abs(f.freq0 - freq0) < FT8.RX_MIN_FREQ_GAP)) found.push({ freq0, score });
+      }
+    }
+    return found;
+  }
+
+  /** Une trame est-elle en train d'arriver (décodage pas fini) ? Ne pas émettre par-dessus. */
+  channelBusy() {
+    return !!(this.listening && !this.transmitting && this._rxBusy && performance.now() - this._rxBusyAt < 6000);
   }
 
   /** Magnitudes -> LLR -> LDPC for one 79-symbol window: 77 payload bits or null. */
@@ -1485,16 +1653,67 @@ class FT8Modem {
     this._absWritten = 0;
     this._decodedSpans = [];
     this._reportedUndecoded = [];
+    this._specRows = new Map();    // ligne absolue (½ symbole) -> {p : demi-raies, sum : 8 tons glissants}
+    this._coarseCache = new Map(); // ligne de départ absolue -> [{b, score}] (scores de synchro > 4)
+    this._tried = new Map();       // 'ligne:b' -> ligne : case affinée sans succès, pas réessayée
+    this._pendingFail = [];        // échecs forts en attente d'être « posés » (onUndecoded)
+    this._specKey = '';
   }
 
   /** Forget spans that have left the ring buffer. */
   _pruneSpans(absStart) {
     this._decodedSpans = this._decodedSpans.filter(sp => sp.end > absStart);
-    this._reportedUndecoded = this._reportedUndecoded.filter(p => p > absStart - this._ringBufferLen);
+    this._reportedUndecoded = this._reportedUndecoded.filter(p => p.pos > absStart - this._ringBufferLen);
   }
 
-  _isCovered(absSample) {
-    return this._decodedSpans.some(sp => absSample >= sp.start && absSample < sp.end);
+  /** Point (position absolue, fréquence) dans une trame déjà décodée ? */
+  _isCovered(absSample, freq0) {
+    return this._decodedSpans.some(sp => absSample >= sp.start && absSample < sp.end
+      && (freq0 === undefined || sp.freq === undefined || Math.abs(sp.freq - freq0) < FT8.RX_MIN_FREQ_GAP));
+  }
+
+  /**
+   * Spectre de la bande : une ligne tous les demi-symboles (positions absolues
+   * multiples de nsps/2), raies au demi-pas (FFT de longueur 2·nsps : indice pair =
+   * raie de 6,25 Hz, impair = entre deux). Grille fine : un signal mal aligné
+   * (jusqu'à ½ symbole, ½ raie) perdait jusqu'à ~4 dB de score de synchro.
+   * Seule la fenêtre de recherche est calculée, lignes reprises du cache.
+   * @returns {{rows: Float32Array[], off0}|null}  off0 : offset dans audio de la ligne 0
+   */
+  _spectrogram(audio, absStart, nsps, sampleRate, kLo, kHi) {
+    const half = nsps / 2;
+    const key = nsps + '/' + sampleRate + '/' + kLo + '/' + kHi;
+    if (this._specKey !== key || !this._specRows) { this._specRows = new Map(); this._coarseCache = new Map(); this._specKey = key; }
+    const windowSamples = Math.round((FT8.RX_SEARCH_WINDOW + FT8.NUM_SYMBOLS * FT8.SYMBOL_PERIOD + 1) * sampleRate);
+    const fromAbs = Math.max(absStart, absStart + audio.length - windowSamples);
+    const firstRow = Math.ceil(fromAbs / half);
+    const lastRow = Math.floor((absStart + audio.length - nsps) / half);
+    if (lastRow < firstRow) return null;
+    const win = this._toneWindow;
+    const buf = new Float64Array(2 * nsps); // seconde moitié à zéro : raies au demi-pas
+    const rows = [];
+    for (let r = firstRow; r <= lastRow; r++) {
+      let row = this._specRows.get(r);
+      if (!row) {
+        const off = r * half - absStart;
+        for (let n = 0; n < nsps; n++) buf[n] = audio[off + n] * win[n];
+        const p = _fftPowers(buf, 2 * kLo, 2 * kHi);
+        // Somme des 8 tons d'une base b (tons à b + 2t), en glissant : O(1) par case ensuite
+        const nb = p.length - 14, sum = new Float32Array(Math.max(0, nb));
+        for (let par = 0; par < 2; par++) {
+          let acc = 0;
+          for (let t = 0; t < 8; t++) acc += p[par + 2 * t];
+          for (let b = par; b < nb; b += 2) { sum[b] = acc; acc += p[b + 16] - p[b]; }
+        }
+        row = { p, sum };
+        this._specRows.set(r, row);
+      }
+      rows.push(row);
+    }
+    for (const r of this._specRows.keys()) if (r < firstRow) this._specRows.delete(r);
+    for (const r of this._coarseCache.keys()) if (r < firstRow) this._coarseCache.delete(r);
+    for (const [k, r] of this._tried) if (r < firstRow) this._tried.delete(k);
+    return { rows, row0: firstRow, off0: firstRow * half - absStart };
   }
 
   /**

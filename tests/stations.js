@@ -64,6 +64,8 @@ async function air(from, fr, dur) {
   for (const to of STATIONS) {
     if (to === from) continue;
     const page = pages[to];
+    // Comme le modem : trame repérée à l'antenne jusqu'à son décodage (pas d'émission par-dessus)
+    page.evaluate((ms) => { window.__busyUntil = Math.max(window.__busyUntil || 0, Date.now() + ms); }, (dur + LAT) * 1000 + 300).catch(() => {});
     if (fr.telemetry !== null || fr.blocks.length === 1) {
       const f = fr.telemetry !== null ? { telemetry: fr.telemetry } : { text: fr.blocks[0] };
       setTimeout(async () => {
@@ -98,13 +100,14 @@ async function air(from, fr, dur) {
 
 async function setupPage(page, name) {
   await page.evaluate(({ K, name }) => {
-    for (const k of ['ACK_TIMEOUT', 'ACK_TIMEOUT_EXT', 'ACK_ROUNDTRIP', 'RX_STABLE', 'RX_SESSION_TTL', 'RX_DUP_WINDOW', 'RX_RPT_WINDOW', 'RX_QUIET']) LINK[k] *= K;
+    for (const k of ['ACK_TIMEOUT', 'ACK_TIMEOUT_EXT', 'ACK_ROUNDTRIP', 'RX_STABLE', 'RX_SESSION_TTL', 'RX_DUP_WINDOW', 'RX_RPT_WINDOW', 'RX_QUIET', 'CLEAR_MAX', 'ACK_WAIT_MAX', 'CLEAR_GRACE']) LINK[k] *= K;
     FT8.MULTI_FRAME_GAP *= K;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const P = FT8Modem.prototype;
     P.startListening = async function () { window.__modem = this; this.listening = true; if (this.onStatusChange) this.onStatusChange('listening'); };
     P.stopListening = function () { this.listening = false; if (this.onStatusChange) this.onStatusChange('idle'); };
     P.cancelTransmit = async function () { this._txAborted = true; };
+    P.channelBusy = function () { return this.listening && !this.transmitting && Date.now() < (window.__busyUntil || 0); };
     const decode = (sym) => {
       const n = sym.length === 79 ? 1 : (sym.length - 7) / 72;
       const blocks = [];

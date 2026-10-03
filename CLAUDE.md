@@ -107,6 +107,15 @@ RPT       : type=2 (2) | msgId (5) | seq (4)
   de répétition, une fois par trame attendue.
 - Répétition reçue (accusé perdu) : reconnue (msgId/seq, ou même texte < 180 s), pas de
   doublon affiché, réaccusée. Un étendu reçu avec des trous est complété par sa répétition.
+- **Jamais d'émission pendant une réception** : toute émission (message, répétition, accusé,
+  RPT, balise) passe par `_transmit` → `_waitClear`, qui attend que `modem.channelBusy()` soit
+  faux (`CLEAR_MAX` 150 s) : on décode tout ce qui arrive avant de répondre, quelle que soit la
+  fréquence. Un envoi attend en plus la fin des réceptions en cours (`_waitRxQuiet`). L'état
+  `channel` s'affiche sur la bulle (« reception en cours, emission differee »).
+- Attente d'accusé prolongée tant qu'une trame arrive (`_waitFor`, `ACK_WAIT_MAX`), puis
+  `CLEAR_GRACE` (6 s) de canal libre : l'accusé, retenu par une 3e station, part à sa fin.
+- Assemblage des étendus par fréquence (`frame.freq`, `SAME_FREQ_HZ` 10 Hz) : deux stations
+  simultanées ne sont jamais mélangées.
 
 ## Messages formatés (`medevac.js`, `medevac-ui.js`)
 
@@ -218,19 +227,37 @@ dans l'historique du commit « Fond monde embarqué ». Emplacements de tuiles v
 
 ## Démodulation (RX)
 
-Passe de décodage toutes les 2 s sur tout le ring buffer (~130 s) :
-1. **Puissances Goertzel** sur une grille d'un symbole, 14 bins (±3 bins autour des 8 tons)
-2. **Recherche Costas grossière**, puis sélection de **6 candidats de créneaux distincts**
-   (espacement ≥ 20 symboles : < 36, car un étendu a un Costas tous les 36 symboles et une
-   fenêtre décalée d'un demi-bloc synchronise aussi bien que la vraie)
-3. **Raffinement fin séparable** : fréquence au temps grossier, puis temps à la meilleure
-   fréquence (18 évaluations au lieu de 81), + interpolation parabolique
-4. LDPC → CRC-14 → texte libre ou télémétrie ; tentative d'étendu (blocs avant **et** arrière)
+Capture micro décimée à **12 kHz** (`RX_RATE`, FIR Blackman 65 coefs à 48 kHz, `decimationFilter`).
+Passe de décodage toutes les 2 s, **large bande** (`RX_BAND_MIN`-`MAX` 200-3 000 Hz) : plusieurs
+stations simultanées sur des fréquences différentes sont toutes décodées (comme WSJT-X).
+1. **Spectrogramme FFT** (`_fftPowers`, longueur quelconque) : une ligne par **demi-symbole**,
+   raies au **demi-pas** (3,125 Hz), sur les 40 dernières s (`RX_SEARCH_WINDOW`) + une trame.
+   Lignes alignées sur la position absolue, **gardées en cache** (`_specRows`) avec la somme
+   glissante des 8 tons : une passe ne calcule que les 2 s nouvelles
+2. **Recherche Costas temps × fréquence**, scores par ligne de départ en cache (`_coarseCache`),
+   seuil d'admission `RX_COARSE_MIN_SCORE` 15 (max du bruit mesuré 13-17). Sélection de
+   **20 cases distinctes** (temps ≥ 20 symboles **ou** fréquence ≥ 30 Hz). Case affinée sans
+   succès mémorisée (`_tried`) : jamais réessayée, laisse sa place aux suivantes
+3. **Raffinement fin séparable** (±½ symbole, ±2,6 Hz) + interpolation parabolique
+4. LDPC → CRC-14 → texte libre ou télémétrie ; tentative d'étendu (blocs avant **et** arrière).
+   `frame.freq` = fréquence affinée du ton 0
 
-Dédoublonnage **par position absolue** (`_absWritten`, `_decodedSpans`) : un candidat dont le
-centre tombe dans une trame déjà décodée est exclu **avant** la sélection. Une vieille trame
-n'est jamais réémise ni ne bloque une nouvelle, et une trame répétée à l'identique (ARQ) est
-une nouvelle position, donc décodée.
+Mesures (`tests/multisignal.js`, comparaison à l'ancien décodeur 48 kHz canal unique) :
+10 stations simultanées 30/30, forte 0 dB + faible -16 dB à 120 Hz OK, 2 étendus simultanés
+non mélangés ; sensibilité **meilleure** qu'avant (-18 dB : 30/30 contre 21/30, -20 dB : 9/30
+contre 2/30). Passe ~110 ms au repos sur PC (cache), ~1,2 s avec 10 signaux, 2,5 s à froid.
+
+Dédoublonnage **par position absolue et fréquence** (`_decodedSpans` avec `freq`) : un candidat
+dont le centre tombe dans une trame déjà décodée **à moins de 30 Hz** est exclu avant la
+sélection. Une vieille trame n'est jamais réémise, une trame répétée à l'identique (ARQ) est une
+nouvelle position, et une autre station au même instant sur une autre fréquence passe.
+
+**Trame en cours de réception** (`_framesInProgress` → `channelBusy()`) : fenêtres de départ trop
+récentes pour 79 symboles dont les 1 ou 2 Costas reçus synchronisent (`RX_BUSY_SCORE_1/2` 12/17,
+bruit max 11/12) **et** dont les tons de données suivent le dernier Costas (contraste
+`RX_BUSY_CONTRAST`, sinon c'est la fin d'une trame finie) ; aussi trame décodée qui continue
+(étendu) ou dont la traîne n'est pas captée. Lignes muettes (micro coupé) ignorées. Mesure :
+0 fausse alerte sur 600 s de bruit, détecté 100 % à -10 dB, ~95 % à -14 dB, ~60-70 % à -18 dB.
 
 Autres points :
 - Micro coupé (zéros) pendant notre émission + 300 ms (`TX_MUTE_TAIL_MS`) : jamais d'auto-décodage
@@ -277,7 +304,10 @@ node tests/ptt-timing.js
 node tests/passband.js 8        # → bande utile 500-2500 Hz, canaux d'abord 1400-2500 (harmoniques)
 
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
-node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
+node tests/link-audio.js        # SNR -10 dB (argument : autre SNR) ; dont 3e station sur autre fréquence
+
+# Plusieurs stations simultanées (2, 5, 10, forte + faible, 2 étendus) — ~1 min
+node tests/multisignal.js 3
 
 # 3 stations ChatMTX complètes (Chromium headless), air simulé avec pertes, temps ×10 — ~6 min
 # 23 scénarios : adressage, en l'air, répétitions, RPT, 9-line/MIST, collationnement, alerte

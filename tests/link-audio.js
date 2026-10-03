@@ -41,8 +41,8 @@ function makeWorld() {
   return w;
 }
 
-function makeStation(w, name) {
-  const m = new FT8Modem({ baseFreq: 1000 });
+function makeStation(w, name, freq = 1000, call = name === 'A' ? 'PC' : 'K7') {
+  const m = new FT8Modem({ baseFreq: freq });
   const nsps = Math.round(SR * FT8.SYMBOL_PERIOD);
   const len = Math.round(SR * (15 + FT8.EXTENDED_MAX_BLOCKS * FT8.EXTENDED_BLOCK_SYMBOLS * FT8.SYMBOL_PERIOD));
   Object.assign(m, { _sampleRate: SR, _nsps: nsps, _ringBuffer: new Float32Array(len), _ringBufferLen: len, _ringWritePos: 0, listening: true });
@@ -51,10 +51,11 @@ function makeStation(w, name) {
   m._toneWindow = new Float32Array(nsps).fill(1);
   for (let i = 0; i < taper; i++) { const e = 0.5 * (1 - Math.cos(Math.PI * i / taper)); m._toneWindow[i] = e; m._toneWindow[nsps - 1 - i] = e; }
 
-  const st = { name, m, txUntil: -1, muteUntil: -1, dropNext: () => false, sent: [], rx: new Map(), txEvents: [], decoding: false };
+  const st = { name, m, txUntil: -1, muteUntil: -1, dropNext: () => false, sent: [], rx: new Map(), txEvents: [], decoding: false, acks: true };
   st.link = new SonoLink({
-    now: w.now, setTimer: w.setTimer, clearTimer: w.clearTimer, ackEnabled: () => true,
-    callsign: () => (name === 'A' ? 'PC' : 'K7'),
+    now: w.now, setTimer: w.setTimer, clearTimer: w.clearTimer, ackEnabled: (t) => (typeof st.acks === 'function' ? st.acks(t) : st.acks),
+    callsign: () => call,
+    channelBusy: () => m.channelBusy(),
     abort: () => {},
     transmit: (frames, opts = {}) => new Promise((resolve) => {
       let t = w.t;
@@ -62,7 +63,7 @@ function makeStation(w, name) {
         const wave = m.generateWaveform(frameToSymbols(f), SR);
         const deaf = w.stations.filter((o) => o !== st && o.dropNext(f)).map((o) => o.name);
         w.air.push({ from: st, start: t, wave, deaf: new Set(deaf) });
-        st.sent.push({ f, start: t, deaf });
+        st.sent.push({ f, start: t, end: t + wave.length / SR, deaf });
         if (opts.onProgress) w.setTimer(() => opts.onProgress(i + 1, frames.length), (t - w.t) * 1000);
         t += wave.length / SR + (i < frames.length - 1 ? FT8.MULTI_FRAME_GAP : 0);
       });
@@ -131,7 +132,7 @@ async function run(w, until, maxT) {
 async function exchange(text, mode, setup, ack = true) {
   const w = makeWorld();
   const A = makeStation(w, 'A'), B = makeStation(w, 'B');
-  if (setup) setup(A, B);
+  if (setup) setup(A, B, w);
   // 3 s de bruit avant l'envoi
   await run(w, () => false, 3);
   let result = null;
@@ -190,6 +191,30 @@ const summary = ({ w, A, B, result }) => `${result.status} en ${w.t.toFixed(0)} 
     console.log('Étendu (1re émission perdue) : ' + summary(r));
     check('confirmé au 2e envoi', r.result.status === 'confirmed' && r.A.txEvents.filter((e) => e.state === 'retry').length === 1, JSON.stringify(r.result));
     check('reçu une fois, intact', done(r.B).length === 1 && done(r.B)[0].text === EXT);
+  }
+
+  {
+    // Troisième station C, 460 Hz plus haut, qui n'entend pas A : elle diffuse un étendu
+    // pendant l'échange. B l'entend en même temps que A (décodage large bande), attend
+    // qu'elle ait fini et l'avoir décodée avant d'accuser ; A prolonge son attente.
+    const CTEXT = 'ZZ99DIFFUSION SUR UNE AUTRE FREQUENCE';
+    let C;
+    const r = await exchange('PCHELLO WORLD', 'standard', (A, B, w) => {
+      C = makeStation(w, 'C', 1460, 'ZZ');
+      // Comme l'application : seul le destinataire accuse, personne n'accuse une diffusion (99)
+      A.acks = false;
+      B.acks = (t) => t.indexOf('PC') === 0;
+      C.acks = false;
+      C.link.channelBusy = () => false;
+      w.setTimer(() => C.link.send(CTEXT, FT8.MODE_EXTENDED, { ack: false }), 8000);
+    });
+    console.log('Standard + 3e station sur une autre fréquence : ' + summary(r));
+    const cEnd = Math.max(...C.sent.map((x) => x.end));
+    const bAck = r.B.sent[0];
+    check('confirmé sans répétition', r.result.status === 'confirmed' && r.A.txEvents.filter((e) => e.state === 'retry').length === 0, JSON.stringify(r.result));
+    check('B a décodé A et C (deux fréquences en même temps)', done(r.B).some((e) => e.text === 'PCHELLO WORLD') && done(r.B).some((e) => e.text === CTEXT),
+      done(r.B).map((e) => e.text).join(' | '));
+    check('accusé de B après la fin de C', bAck && bAck.start >= cEnd, bAck && `accusé à ${bAck.start.toFixed(1)} s, fin C ${cEnd.toFixed(1)} s`);
   }
 
   {

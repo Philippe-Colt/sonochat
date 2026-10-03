@@ -37,6 +37,10 @@ const LINK = {
                             // un étendu de 130 car. répété dure ~2 min 45 (émission + attente)
   RX_RPT_WINDOW: 50,        // s après le début de notre dernier accusé (accusé 12,64 + trame suivante 12,64 + délais)
   RX_QUIET: 30,             // s d'inactivité d'une réception avant d'autoriser notre envoi
+  CLEAR_MAX: 150,           // s max d'attente qu'une trame à l'antenne finisse (étendu de 10 blocs : 115 s)
+  ACK_WAIT_MAX: 150,
+  CLEAR_GRACE: 6,           // s de canal libre après une attente prolongée : l'accusé retenu a le temps d'être repéré        // s max de prolongation de l'attente d'accusé tant qu'une trame arrive
+  SAME_FREQ_HZ: 10,         // Hz : trames d'une même station (fréquence affinée à ±1 Hz)
   MISSING: '…',        // affiché à la place d'un bloc ou d'une trame manquant
 };
 
@@ -183,6 +187,8 @@ class SonoLink {
    * @param {function(string): boolean} [io.ackEnabled]  accuser ce texte reçu ? (l'application :
    *        seulement s'il nous est adressé)
    * @param {function(): string} [io.callsign]  indicatif court (2 car.) placé dans nos accusés
+   * @param {function(): boolean} [io.channelBusy]  une trame est en train d'arriver (pas encore
+   *        décodable) : on n'émet rien par-dessus, on décode d'abord
    */
   constructor(io) {
     this.io = io;
@@ -192,6 +198,7 @@ class SonoLink {
     this.ackEnabled = io.ackEnabled || (() => true);
     this.callsign = io.callsign || (() => '');  // indicatif court porté par nos accusés
     this.log = io.log || (() => {});
+    this.channelBusy = io.channelBusy || (() => false);
 
     this.onTx = null;   // ({id, state, ...})
     this.onRx = null;   // ({id, text, done, complete, frames?, total?, ackSent?} | {id, superseded: autreId})
@@ -348,19 +355,41 @@ class SonoLink {
   }
 
   _emitTx(ev) {
+    if (ev.state === 'frame') this._lastFrameEv = ev;
     if (this.onTx) this.onTx(ev);
   }
 
-  /** Une seule émission à la fois : trames de message et accusés sont sérialisés. */
-  _transmit(frames, opts = {}) {
-    const run = this._txChain.then(() => this.io.transmit(frames, opts));
+  /**
+   * Une seule émission à la fois : trames de message et accusés sont sérialisés.
+   * Jamais par-dessus une trame en train d'arriver : on attend qu'elle finisse et
+   * soit décodée (elle peut nous être adressée, ou être l'accusé attendu).
+   * @param {boolean} [own]  trame de notre envoi (false : accusé, demande de répétition) :
+   *        annulée si l'envoi l'est pendant l'attente
+   */
+  _transmit(frames, opts = {}, own = true) {
+    const run = this._txChain
+      .then(() => this._waitClear(own))
+      .then(() => (own && this._sending && this._cancelled ? { aborted: true } : this.io.transmit(frames, opts)));
     this._txChain = run.catch(() => {});
     return run;
   }
 
   /** Émission automatique (accusé, demande de répétition) : erreurs journalisées. */
   _transmitQuiet(frames) {
-    this._transmit(frames).catch((e) => this.log('TX erreur: ' + (e && e.message)));
+    this._transmit(frames, {}, false).catch((e) => this.log('TX erreur: ' + (e && e.message)));
+  }
+
+  /** Attend que plus aucune trame n'arrive (CLEAR_MAX au plus). */
+  async _waitClear(own) {
+    if (!this.channelBusy()) return;
+    const deadline = this.now() + LINK.CLEAR_MAX * 1000;
+    const ev = own && this._sending && this._lastFrameEv;
+    if (ev) this._emitTx({ ...ev, state: 'channel' });
+    this.log('trame en cours de réception : émission différée');
+    while (this.channelBusy() && this.now() < deadline && !(own && this._sending && this._cancelled)) {
+      await new Promise((r) => this.setTimer(r, 1000));
+    }
+    if (ev && !this._cancelled) this._emitTx(ev);
   }
 
   _waitFor(match, timeoutS) {
@@ -374,7 +403,19 @@ class SonoLink {
           resolve(ev);
         },
       };
-      w.timer = this.setTimer(() => w.finish(null), timeoutS * 1000);
+      // Délai écoulé pendant qu'une trame arrive (l'accusé, ou une autre station qui
+      // le retarde) : on attend qu'elle soit décodée, puis que le canal soit resté
+      // libre CLEAR_GRACE s (l'accusé retenu part à ce moment-là) avant de conclure.
+      const limit = this.now() + (timeoutS + LINK.ACK_WAIT_MAX) * 1000;
+      let lastBusy = -Infinity;
+      const expire = () => {
+        if (this._waiter !== w) return;
+        if (this.channelBusy()) lastBusy = this.now();
+        const hold = this.now() - lastBusy < LINK.CLEAR_GRACE * 1000;
+        if (hold && this.now() < limit) w.timer = this.setTimer(expire, 1000);
+        else w.finish(null);
+      };
+      w.timer = this.setTimer(expire, timeoutS * 1000);
       this._waiter = w;
     });
   }
@@ -382,7 +423,7 @@ class SonoLink {
   /** Ne pas parler par-dessus un correspondant en train de nous envoyer un message. */
   async _waitRxQuiet() {
     const deadline = this.now() + 2 * LINK.RX_QUIET * 1000;
-    while (!this._cancelled && this.now() < deadline && this._rxInProgress()) {
+    while (!this._cancelled && this.now() < deadline && (this._rxInProgress() || this.channelBusy())) {
       await new Promise((r) => this.setTimer(r, 1000));
     }
   }
@@ -486,7 +527,9 @@ class SonoLink {
     const now = this.now();
     const blocks = frame.ext ? frame.blocks : [frame.text];
     const blockStep = FT8.EXTENDED_BLOCK_SYMBOLS * FT8.SYMBOL_PERIOD * frame.sampleRate;
-    const newest = this._rxTexts.filter((e) => now - e.time < LINK.RX_DUP_WINDOW * 1000);
+    // Même station = même fréquence (décodeur large bande : plusieurs stations à la fois)
+    const sameFreq = (e) => frame.freq === undefined || e.freq === undefined || Math.abs(e.freq - frame.freq) < LINK.SAME_FREQ_HZ;
+    const newest = this._rxTexts.filter((e) => now - e.time < LINK.RX_DUP_WINDOW * 1000 && sameFreq(e));
 
     // 1. Suite d'un envoi en cours de réception (bloc suivant d'un étendu, ou
     //    fragment après un bloc perdu) : même grille de blocs, moins de 10 blocs.
@@ -529,7 +572,7 @@ class SonoLink {
     }
 
     if (!entry) {
-      entry = { rxId: ++this._rxSeq, base: frame.absPos, blocks: [], text: '', done: false, complete: false, time: now, timer: null, acked: false };
+      entry = { rxId: ++this._rxSeq, base: frame.absPos, blocks: [], text: '', done: false, complete: false, time: now, timer: null, acked: false, freq: frame.freq };
       this._rxTexts.push(entry);
     }
 

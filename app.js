@@ -139,6 +139,7 @@
       // Seul le destinataire accuse (et toujours) ; 99 = message en l'air, personne
       ackEnabled: (text) => modem.listening && isForMe(text),
       callsign: () => myCallsign(),
+      channelBusy: () => modem.channelBusy(),
       log: (m) => console.log('[LINK] ' + m),
     });
     modem.onFrame = (frame) => link.handleFrame(frame);
@@ -492,6 +493,7 @@
     switch (ev.state) {
       case 'frame': text = [frame || 'emission', retry].filter(Boolean).join(' · '); break;
       case 'waitAck': text = [frame, 'attente accuse', retry].filter(Boolean).join(' · '); break;
+      case 'channel': text = [frame, 'reception en cours, emission differee'].filter(Boolean).join(' · '); break;
       case 'retry': text = [frame, ev.reason === 'rpt' ? 'repetition demandee' : ev.reason === 'mismatch' ? 'message incomplet chez le correspondant' : 'pas d\'accuse'].filter(Boolean).join(' · '); break;
       default: return;
     }

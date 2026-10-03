@@ -4,7 +4,7 @@
 const fs = require('fs'), vm = require('vm'), path = require('path');
 
 const ctx = { console: { log() {}, error: console.error, warn() {} }, performance, setTimeout, clearTimeout,
-  Math, Float32Array, Float64Array, Uint8Array, Int32Array, Int8Array, Array, Set, Map, Object, String,
+  Math, Float32Array, Float64Array, Uint32Array, Uint8Array, Int32Array, Int8Array, Array, Set, Map, Object, String,
   Number, Promise, Date, Infinity, NaN, BigInt, Error, JSON };
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'ft8-modem.js'), 'utf8') + ';this.FT8Modem = FT8Modem;', ctx);

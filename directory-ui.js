@@ -114,7 +114,7 @@
         </div>
         <h3 class="mv-family">Canaux et créneaux</h3>
         <div class="mv-grid mv-grid-1">
-          <button type="button" class="mv-big" data-act="alloc"><b>ATTRIBUER</b><span>Canal et créneau à chaque station qui n'en a pas (1 400-2 500 Hz d'abord, pas de 60 Hz)</span></button>
+          <button type="button" class="mv-big" data-act="alloc"><b>ATTRIBUER</b><span>Canal et créneau à chaque station qui n'en a pas (12 canaux de 1 000 à 2 100 Hz, pas de 100 Hz)</span></button>
         </div>
         <div class="dir-net">
           <span>Créneau des balises</span>
@@ -151,14 +151,17 @@
         </div>`,
     });
     overlay.querySelectorAll('[data-i]').forEach((b) => { b.onclick = () => renderEdit(+b.dataset.i); });
-    on('[data-act="add"]', () => renderEdit(-1));
+    on('[data-act="add"]', () => {
+      if (entries.length >= MAX_STATIONS) { renderList(MAX_STATIONS + ' stations au plus dans un réseau : le décodeur cherche en priorité sur leurs 12 canaux.'); return; }
+      renderEdit(-1);
+    });
     on('[data-act="alloc"]', () => {
       const r = allocate(entries, net);
       const changed = JSON.stringify(r.entries) !== JSON.stringify(entries);
       entries = r.entries;
       net.round = r.net.round;
       if (changed) dirty = true;
-      renderList(r.full.length ? 'Plus de canal libre pour : ' + r.full.join(', ') + ' (34 au plus au pas de 60 Hz).' : changed ? 'Canaux et créneaux attribués.' : 'Rien à attribuer : tout est déjà réglé.');
+      renderList(r.full.length ? 'Plus de canal libre pour : ' + r.full.join(', ') + ' (12 au plus).' : changed ? 'Canaux et créneaux attribués.' : 'Rien à attribuer : tout est déjà réglé.');
     });
     overlay.querySelectorAll('[data-slot]').forEach((b) => {
       b.onclick = () => {

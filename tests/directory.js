@@ -68,7 +68,7 @@ check('affichage : long si connu', lookupCall({ PC: 'F4MTX' }, 'PC') === 'F4MTX'
   check('en-tête réseau', r.net.slotS === 20 && r.net.round === 12 && r.net.step === 60 && r.net.bandMin === 500 && r.net.version === '3' && r.net.date === '2026-10-03', r.net);
   check('aucune incohérence', r.warnings.length === 0, r.warnings);
   const d = parseDirectory('PC;F4MTX;;;1400;2\nXY;F4XYZ;;;1430;2\nZZ;F1ZZZ;;;99999;0\n');
-  check('sans en-tête : défauts, tour = plus grand créneau', d.net.slotS === 15 && d.net.round === 2 && d.net.step === 60, d.net);
+  check('sans en-tête : défauts, tour = plus grand créneau', d.net.slotS === 15 && d.net.round === 2 && d.net.step === 100, d.net);
   check('canaux trop proches, créneau en double, valeurs refusées signalés',
     d.warnings.some((w) => /trop proches/.test(w)) && d.warnings.some((w) => /même créneau 2/.test(w))
     && d.warnings.some((w) => /canal « 99999 »/.test(w)) && d.warnings.some((w) => /créneau « 0 »/.test(w)) && d.imported === 3 && !d.channels.ZZ, d.warnings);
@@ -84,16 +84,17 @@ check('affichage : long si connu', lookupCall({ PC: 'F4MTX' }, 'PC') === 'F4MTX'
 {
   const D = require('../directory.js');
   const plan = D.channelPlan();
-  check('plan : 19 canaux 1400-2480 d\'abord, puis 15 de 500 à 1340', plan.length === 34 && plan[0] === 1400 && plan[18] === 2480
-    && plan[19] === 500 && plan[33] === 1340, plan);
-  const a = D.allocate([{ short: 'PC', freq: 1460, slot: 3 }, { short: 'XY' }, { short: 'ZZ', freq: 1480, slot: 3 }, { short: 'AB', freq: 9000 }], {});
+  check('plan : 12 canaux de 1000 à 2100 Hz au pas de 100', plan.length === 12 && plan[0] === 1000 && plan[11] === 2100, plan);
+  check('plan au pas de 60 : 1000 → 1660', D.channelPlan({ step: 60 })[11] === 1660);
+  const a = D.allocate([{ short: 'PC', freq: 1100, slot: 3 }, { short: 'XY' }, { short: 'ZZ', freq: 1120, slot: 3 }, { short: 'AB', freq: 9000 }], {});
   const by = {}; a.entries.forEach((e) => { by[e.short] = e; });
-  check('attribution : choix valides gardés, conflits et manques complétés', by.PC.freq === 1460 && by.PC.slot === 3
-    && by.XY.freq === 1400 && by.XY.slot === 1 && by.ZZ.freq === 1520 && by.ZZ.slot === 2 && by.AB.freq === 1580 && by.AB.slot === 4
+  check('attribution : choix valides gardés, conflits et manques complétés', by.PC.freq === 1100 && by.PC.slot === 3
+    && by.XY.freq === 1000 && by.XY.slot === 1 && by.ZZ.freq === 1200 && by.ZZ.slot === 2 && by.AB.freq === 1300 && by.AB.slot === 4
     && a.net.round === 4 && a.full.length === 0, a.entries);
   check('attribution : aucun conflit restant', D.checkChannels(Object.fromEntries(a.entries.map((e) => [e.short, e]))).length === 0);
-  const many = D.allocate(Array.from({ length: 36 }, (_, i) => ({ short: 'S' + i })), {});
-  check('36 stations : 34 canaux, 2 sans canal signalées', many.full.length === 2 && many.entries.filter((e) => e.freq).length === 34 && many.net.round === 36, many.full);
+  const many = D.allocate(Array.from({ length: 14 }, (_, i) => ({ short: 'S' + i })), {});
+  check('14 stations : 12 canaux, 2 sans canal signalées', many.full.length === 2 && many.entries.filter((e) => e.freq).length === 12, many.full);
+  check('plus de 12 stations signalé à l\'import', parseDirectory(Array.from({ length: 13 }, (_, i) => 'S' + String.fromCharCode(65 + i) + ';F1AA' + i).join('\n')).warnings.some((w) => /12 au plus/.test(w)));
   const entries = [{ short: 'PC', long: 'F4MTX', type: 'SFGPUCI--------', echelon: 'D', freq: 1400, slot: 1 },
     { short: 'XY', long: 'F4XYZ', freq: 1460, slot: 2 }, { short: 'ZZ', long: 'F1ZZZ' }, { short: 'K1', long: 'W1AW', type: 'SFGPUCE--------' }];
   const net = { slotS: 20, round: 2, version: '8', date: '2026-10-03' };

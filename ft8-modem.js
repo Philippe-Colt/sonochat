@@ -72,6 +72,12 @@ const FT8 = {
   // Score de synchro minimal d'un candidat large bande (mesuré à 12 kHz : maximum du
   // bruit 13-17 sur ~900 demi-raies × 500 lignes, signal décodable à -18 dB 27-35)
   RX_COARSE_MIN_SCORE: 15,
+  RX_DITHER_MIN_SCORE: 20,
+  RX_OSD_PAIRS: 50,              // OSD après échec de la BP : ordre 1 + paires parmi les 50 moins fiables de la base (-1 : sans OSD)
+  // Canaux connus (annuaire, 12 au plus) : seuil d'admission bas autour d'eux (bruit max
+  // sur ±15 Hz × 2 s de départs : ~11), pour aller chercher les signaux les plus faibles
+  RX_CHANNEL_HZ: 15,
+  RX_CHANNEL_MIN_SCORE: 9,       // synchro fine au-dessus : essais voisins si le LDPC échoue (bruit : ~13-17)
   // Trame en cours de réception (pas encore décodable) : synchro partielle sur 1 ou 2
   // blocs Costas (maximum du bruit mesuré 11 et 12), puis tons de données présents
   RX_BUSY_SCORE_1: 12,
@@ -342,6 +348,7 @@ class FT8Modem {
 
   constructor(options = {}) {
     this.baseFreq = options.baseFreq || 1000; // audio frequency of tone 0
+    this._channels = [];                      // canaux du réseau (setChannels)
     this.volume = options.volume || 0.8;
 
     this.audioCtx = null;
@@ -693,6 +700,108 @@ class FT8Modem {
     }
 
     return null; // decoding failed
+  }
+
+  // ============================================================
+  // LDPC DECODING : OSD (ordered statistics), après échec de la BP
+  // ============================================================
+
+  /** Matrice génératrice systématique G (91 × 174), lignes compactées sur 6 mots de 32 bits. */
+  static _osdGenerator() {
+    if (FT8Modem._osdG) return FT8Modem._osdG;
+    const G = [];
+    for (let j = 0; j < 91; j++) {
+      const row = new Uint32Array(6);
+      row[j >> 5] |= 1 << (j & 31);
+      for (let i = 0; i < 83; i++) {
+        const g = FT8.LDPC_GENERATOR[i];
+        if ((g[j >> 3] >> (7 - (j & 7))) & 1) row[(91 + i) >> 5] |= 1 << ((91 + i) & 31);
+      }
+      G.push(row);
+    }
+    FT8Modem._osdG = G;
+    return G;
+  }
+
+  /**
+   * Décodage OSD (comme WSJT-X après la BP) : les 91 positions les plus fiables (indépendantes)
+   * sont décidées, réencodées, puis on essaie d'en retourner 1 (toutes) ou 2 (parmi les
+   * `pairs` moins fiables de cette base). Le mot le plus proche du reçu (somme des |LLR| en
+   * désaccord) est retenu s'il passe le CRC-14. Renvoie les 91 bits d'information ou null.
+   * @param {Float32Array} llr  174 LLR (positif = 0)
+   * @param {number} [pairs]  profondeur de l'ordre 2 (0 : ordre 1 seulement)
+   */
+  static osdDecode(llr, pairs = 40) {
+    const N = 174, K = 91, W = 6;
+    const G0 = FT8Modem._osdGenerator();
+    // Colonnes triées par fiabilité décroissante
+    const order = Array.from({ length: N }, (_, i) => i).sort((a, b) => Math.abs(llr[b]) - Math.abs(llr[a]));
+    // Matrice permutée : M[j] = ligne j de G, colonnes dans `order`
+    const M = G0.map((row) => {
+      const r = new Uint32Array(W);
+      for (let c = 0; c < N; c++) {
+        const src = order[c];
+        if ((row[src >> 5] >>> (src & 31)) & 1) r[c >> 5] |= 1 << (c & 31);
+      }
+      return r;
+    });
+    const bit = (r, c) => (r[c >> 5] >>> (c & 31)) & 1;
+    const swapCols = (a, b) => {
+      for (const r of M) {
+        const x = bit(r, a), y = bit(r, b);
+        if (x !== y) { r[a >> 5] ^= 1 << (a & 31); r[b >> 5] ^= 1 << (b & 31); }
+      }
+      const t = order[a]; order[a] = order[b]; order[b] = t;
+    };
+    // Élimination de Gauss : identité sur les K premières colonnes (colonne dépendante :
+    // échangée avec la prochaine colonne fiable qui convient)
+    let next = K;
+    for (let c = 0; c < K; c++) {
+      let piv = -1;
+      for (;;) {
+        for (let r = c; r < K; r++) if (bit(M[r], c)) { piv = r; break; }
+        if (piv >= 0 || next >= N) break;
+        swapCols(c, next++);
+      }
+      if (piv < 0) return null;
+      if (piv !== c) { const t = M[piv]; M[piv] = M[c]; M[c] = t; }
+      for (let r = 0; r < K; r++) {
+        if (r !== c && bit(M[r], c)) for (let w = 0; w < W; w++) M[r][w] ^= M[c][w];
+      }
+    }
+    // Décision dure (ordre permuté) et poids
+    const hard = new Uint32Array(W);
+    const rel = new Float32Array(N);
+    for (let c = 0; c < N; c++) {
+      const v = llr[order[c]];
+      rel[c] = Math.abs(v);
+      if (v < 0) hard[c >> 5] |= 1 << (c & 31);
+    }
+    // Ordre 0 : mot engendré par les décisions sur la base
+    const c0 = new Uint32Array(W);
+    for (let j = 0; j < K; j++) if (bit(hard, j)) for (let w = 0; w < W; w++) c0[w] ^= M[j][w];
+    const dist = (cw) => {
+      let d = 0;
+      for (let w = 0; w < W; w++) {
+        let x = (cw[w] ^ hard[w]) >>> 0;
+        while (x) { const b = 31 - Math.clz32(x); d += rel[(w << 5) + b]; x ^= 1 << b; }
+      }
+      return d;
+    };
+    const tmp = new Uint32Array(W);
+    let best = c0.slice(), bestD = dist(c0);
+    const tryFlip = (a, b) => {
+      for (let w = 0; w < W; w++) tmp[w] = c0[w] ^ M[a][w] ^ (b >= 0 ? M[b][w] : 0);
+      const d = dist(tmp);
+      if (d < bestD) { bestD = d; best = tmp.slice(); }
+    };
+    for (let a = 0; a < K; a++) tryFlip(a, -1);                          // ordre 1
+    for (let a = K - pairs; a < K; a++) for (let b = a + 1; b < K; b++) tryFlip(a, b); // ordre 2
+    // Retour à l'ordre d'origine, contrôle CRC
+    const cw = new Uint8Array(N);
+    for (let c = 0; c < N; c++) cw[order[c]] = bit(best, c);
+    const info = cw.slice(0, K);
+    return FT8Modem.checkCRC14(info) ? info : null;
   }
 
   // ============================================================
@@ -1358,6 +1467,14 @@ class FT8Modem {
     const lastBase = 2 * (numBins - 8); // demi-raies ; ton t à b + 2t
     // Contribution Costas : log(p[ton attendu] / moyenne des 7 autres), comme l'affinage.
     // Scores gardés par ligne de départ : une passe ne calcule que les départs nouveaux.
+    // Canaux connus (annuaire) : seuil bas à ±RX_CHANNEL_HZ, comme l'ancien décodeur à canal
+    // unique ; ailleurs, seuil large bande (station inconnue, assez forte pour sortir du bruit).
+    const thr = new Float32Array(lastBase + 1).fill(FT8.RX_COARSE_MIN_SCORE);
+    for (const f of this._channels) {
+      for (let b = 0; b <= lastBase; b++) {
+        if (Math.abs((kLo + b / 2) * binWidth - f) <= FT8.RX_CHANNEL_HZ) thr[b] = FT8.RX_CHANNEL_MIN_SCORE;
+      }
+    }
     let fresh = 0;
     for (let sp = minStart; sp <= maxStart; sp++) {
       let list = this._coarseCache.get(row0 + sp);
@@ -1374,7 +1491,7 @@ class FT8Modem {
               else if (sigP > 0) score += 10;
             }
           }
-          if (score > FT8.RX_COARSE_MIN_SCORE) list.push({ b, score });
+          if (score > thr[b]) list.push({ b, score });
         }
         this._coarseCache.set(row0 + sp, list);
         if (++fresh % 60 === 0) await this._yieldToBrowser();
@@ -1461,10 +1578,25 @@ class FT8Modem {
 
       let decoded = false, retry = false;
       for (const cand of fineCandidates) {
+        // Temps au 1/32 de symbole (5 ms) autour du point de la grille au ¼ de symbole :
+        // une fenêtre décalée de 20 ms coûtait jusqu'à ~1 dB sur les signaux faibles
+        cand.sampleOff = this._refineTimeGoertzel(audio, sampleRate, nsps, cand.sampleOff, cand.freq0, frameLen);
         const refinedFreq0 = this._refineFrequencyGoertzel(
           audio, sampleRate, nsps, cand.sampleOff, cand.freq0
         );
-        const payload = this._decodeWindow(audio, sampleRate, nsps, cand.sampleOff, refinedFreq0);
+        // Échec au meilleur point : essais voisins (±1/16 de symbole, ±0,5 Hz), chaque
+        // jeu de vraisemblances un peu différent donne une chance de plus au LDPC
+        let payload = this._decodeWindow(audio, sampleRate, nsps, cand.sampleOff, refinedFreq0);
+        let usedFreq = refinedFreq0;
+        if (!payload && cand.score >= FT8.RX_DITHER_MIN_SCORE) {
+          const dt = Math.round(nsps / 16);
+          for (const [ds, df] of [[-dt, 0], [dt, 0], [0, -0.5], [0, 0.5]]) {
+            const off = cand.sampleOff + ds;
+            if (off < 0 || off + frameLen > audio.length) continue;
+            payload = this._decodeWindow(audio, sampleRate, nsps, off, refinedFreq0 + df);
+            if (payload) { cand.sampleOff = off; usedFreq = refinedFreq0 + df; break; }
+          }
+        }
         if (!payload) continue;
 
         const text = FT8Modem.decodeText(payload);
@@ -1477,7 +1609,7 @@ class FT8Modem {
 
         if (text !== null) {
           const ext = this._tryExtendedDecode(
-            audio, sampleRate, nsps, cand.sampleOff, refinedFreq0, text, cand.score
+            audio, sampleRate, nsps, cand.sampleOff, usedFreq, text, cand.score
           );
           if (ext) {
             spanStart = ext.firstOff;
@@ -1490,10 +1622,10 @@ class FT8Modem {
         // of an extended message decodes on its own before the next block is
         // complete; the receiver must not answer while the sender still talks.
         if (text !== null) {
-          const cont = this._signalContinues(audio, sampleRate, nsps, spanEnd - frameLen, refinedFreq0);
-          if (cont === null) { retry = true; pendingTail = true; activeFreqs.push(refinedFreq0); break; } // tail not captured yet: retry next pass
+          const cont = this._signalContinues(audio, sampleRate, nsps, spanEnd - frameLen, usedFreq);
+          if (cont === null) { retry = true; pendingTail = true; activeFreqs.push(usedFreq); break; } // tail not captured yet: retry next pass
           frame.continues = cont;
-          if (cont) { stillOnAir = true; activeFreqs.push(refinedFreq0); }
+          if (cont) { stillOnAir = true; activeFreqs.push(usedFreq); }
         } else {
           frame.continues = false;
         }
@@ -1501,14 +1633,14 @@ class FT8Modem {
         frame.absPos = absStart + spanStart;
         frame.absEnd = absStart + spanEnd;
         frame.sampleRate = sampleRate;
-        frame.freq = refinedFreq0;
-        this._rxDecodedLog.push({ freq: refinedFreq0, t: performance.now() });
+        frame.freq = usedFreq;
+        this._rxDecodedLog.push({ freq: usedFreq, t: performance.now() });
         if (this._rxDecodedLog.length > 20) this._rxDecodedLog.shift();
-        this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd, freq: refinedFreq0 });
+        this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd, freq: usedFreq });
 
         const elapsed = performance.now() - t0;
         console.log('[FT8 RX] ' + (frame.ext ? 'EXTENDED (' + frame.blocks.length + ' blocs)' : text !== null ? 'TEXT' : 'TELEMETRY')
-          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' à ' + refinedFreq0.toFixed(1) + ' Hz in ' + (elapsed | 0) + 'ms');
+          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' à ' + usedFreq.toFixed(1) + ' Hz in ' + (elapsed | 0) + 'ms');
         if (this.onFrame) this.onFrame(frame);
         decoded = true;
         break;
@@ -1603,6 +1735,18 @@ class FT8Modem {
     return found;
   }
 
+  /**
+   * Fréquences (ton 0) des canaux du réseau : recherche à seuil bas autour d'elles.
+   * Les scores déjà calculés sont oubliés (ils dépendent du seuil).
+   */
+  setChannels(freqs) {
+    const list = (freqs || []).filter((f) => f > 0).map(Number).sort((a, b) => a - b);
+    if (list.join(',') === this._channels.join(',')) return;
+    this._channels = list;
+    this._coarseCache = new Map();
+    this._tried = new Map();
+  }
+
   _setActivity(freqs) {
     this._rxOnAir = freqs;
     this._rxOnAirAt = performance.now();
@@ -1632,7 +1776,10 @@ class FT8Modem {
     if (!mag) return null;
     const llr = this._extractLLRNormalized(mag);
     if (!llr) return null;
-    const info91 = FT8Modem.ldpcDecode(llr, 50);
+    // BP d'abord ; si elle échoue, OSD (comme WSJT-X) sur des vraisemblances d'amplitude :
+    // à -20 dB, 2,7 fois plus de trames décodées (mesure : 24 → 65 sur 150)
+    let info91 = FT8Modem.ldpcDecode(llr, 50);
+    if (!info91 && FT8.RX_OSD_PAIRS >= 0) info91 = FT8Modem.osdDecode(this._extractLLRAmplitude(mag), FT8.RX_OSD_PAIRS);
     if (!info91) return null;
     // All-zero codeword: valid for LDPC and for CRC-14 alike, but it is what
     // silence (e.g. our muted buffer during TX) decodes to. Never a real frame.
@@ -1684,6 +1831,7 @@ class FT8Modem {
     this._coarseCache = new Map(); // ligne de départ absolue -> [{b, score}] (scores de synchro > 4)
     this._tried = new Map();       // 'ligne:b' -> ligne : case affinée sans succès, pas réessayée
     this._pendingFail = [];        // échecs forts en attente d'être « posés » (onUndecoded)
+    if (!this._channels) this._channels = []; // canaux du réseau (setChannels), gardés d'une écoute à l'autre
     this._rxOnAir = [];            // fréquences des trames à l'antenne (dernière passe)
     this._rxOnAirAt = 0;
     this._rxDecodedLog = [];       // [{freq, t}] trames décodées récemment
@@ -1804,6 +1952,27 @@ class FT8Modem {
   /**
    * Refine frequency using parabolic interpolation on Costas score (Goertzel).
    */
+  /** Temps du meilleur alignement Costas, au 1/32 de symbole, ±1/8 autour de `sampleOff`, interpolé. */
+  _refineTimeGoertzel(audio, sampleRate, nsps, sampleOff, freq0, frameLen) {
+    const step = Math.max(1, Math.round(nsps / 32));
+    const scores = [];
+    let bestK = 0, best = -Infinity;
+    for (let k = -4; k <= 4; k++) {
+      const off = sampleOff + k * step;
+      const sc = off < 0 || off + frameLen > audio.length ? -Infinity : this._costasScoreGoertzel(audio, sampleRate, nsps, off, freq0);
+      scores.push(sc);
+      if (sc > best) { best = sc; bestK = k; }
+    }
+    if (best === -Infinity) return sampleOff;
+    let frac = 0;
+    const i = bestK + 4, sL = scores[i - 1], sR = scores[i + 1];
+    if (i > 0 && i < 8 && isFinite(sL) && isFinite(sR)) {
+      const den = sL - 2 * best + sR;
+      if (den < 0) frac = Math.max(-0.5, Math.min(0.5, 0.5 * (sL - sR) / den));
+    }
+    return Math.max(0, Math.round(sampleOff + (bestK + frac) * step));
+  }
+
   _refineFrequencyGoertzel(audio, sampleRate, nsps, sampleOff, freq0) {
     const delta = 0.5;
     const sL = this._costasScoreGoertzel(audio, sampleRate, nsps, sampleOff, freq0 - delta);
@@ -1843,6 +2012,32 @@ class FT8Modem {
    * This is robust against GFSK spectral spreading because it uses relative
    * power differences rather than absolute noise estimates.
    */
+  /**
+   * Vraisemblances d'amplitude (façon WSJT-X) : max |a| des tons où le bit vaut 0, moins
+   * celui des tons où il vaut 1, normalisé par l'écart-type. Meilleur ordre de fiabilité
+   * pour l'OSD que les écarts de log-puissance (un ton presque vide n'y pèse plus).
+   */
+  _extractLLRAmplitude(mag) {
+    const out = new Float32Array(174);
+    let k = 0;
+    for (let s = 7; s < 72; s++) {
+      if (s === 36) s = 43;
+      const a = mag[s];
+      for (let bit = 0; bit < 3; bit++) {
+        let m0 = -Infinity, m1 = -Infinity;
+        for (let t = 0; t < 8; t++) {
+          if ((FT8.GRAY_UNMAP[t] >> (2 - bit)) & 1) { if (a[t] > m1) m1 = a[t]; } else if (a[t] > m0) m0 = a[t];
+        }
+        out[k++] = m0 - m1;
+      }
+    }
+    let s1 = 0, s2 = 0;
+    for (let i = 0; i < 174; i++) { s1 += out[i]; s2 += out[i] * out[i]; }
+    const sd = Math.sqrt(Math.max(1e-20, s2 / 174 - (s1 / 174) * (s1 / 174)));
+    for (let i = 0; i < 174; i++) out[i] = Math.max(-15, Math.min(15, out[i] / sd * 3.5));
+    return out;
+  }
+
   _extractLLRNormalized(mag) {
     // Compute log-power for all symbols
     const logPower = new Array(79);

@@ -82,18 +82,22 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
     attend le début de mon créneau (1,5 s de tolérance) et ne part que si `link.canTransmitNow()`
     (sinon tour suivant) ; au plus une balise par tour. Les messages manuels ne sont pas
     soumis aux créneaux.
-  - Bande conseillée (mesure `tests/passband.js`) : 500-2 500 Hz, pas de 60 Hz, **1 400-2 500
-    d'abord** (19 canaux sans harmonique dans la bande), puis 500-1 340 (15).
+  - **Réseau limité à 12 stations et 12 canaux** (`MAX_STATIONS`) : plan `channelPlan` =
+    **1 000 → 2 100 Hz au pas de 100 Hz** (en-tête `pas=` pour un autre pas ; sous 1 000 Hz
+    si la bande ne suffit pas). Le modem reçoit ces canaux (`setChannels`, appli :
+    `networkFreqs`) et y cherche à seuil bas. Décodage plat 500-2 500 Hz (`tests/passband.js`) ;
+    sous ~1 350 Hz l'harmonique 2 d'un étage audio saturé tombe dans la bande (-38 dBc), sans
+    effet sauf station locale très forte. Plus de 12 stations : refusé par l'outil, signalé à l'import.
 - **Outil de création** (paramètres → Annuaire → **Créer / modifier**, `DirectoryUI`) : liste des
   stations à gros boutons (bordure rouge = à vérifier), fiche par station (indicatifs, type et
   échelon en listes, canal ± au pas du plan ou « auto », créneau ± ou « auto » ; doublon et `99`
   refusés), **ATTRIBUER** (`allocate` : choix valides gardés, conflits et manques complétés dans
-  l'ordre de `channelPlan` — 1 400 → 2 480 Hz puis 500 → 1 340, 34 canaux —, créneaux libres les
+  l'ordre de `channelPlan` — 1 000 → 2 100 Hz, 12 canaux —, créneaux libres les
   plus bas, tour = plus grand créneau), durée du créneau 13-60 s, contrôles en direct.
   **ENREGISTRER** applique ici (`applyDirectoryText`, comme un import) ; toute modification prend
   une **nouvelle version** (+1) datée du jour, portée par l'en-tête. Diffusion : **QR CODE**
   (lien `https://chatmtx.f4mtx.com/#annuaire=reseau;…~PC;F4MTX;…` : lignes séparées par `~`, `#`
-  de l'en-tête retiré, aucun caractère à encoder ; ~150 car. pour 3 stations, ~1,3 Ko pour 34),
+  de l'en-tête retiré, aucun caractère à encoder ; ~150 car. pour 3 stations, ~450 pour 12),
   **PARTAGER** (texte : partage natif, Web Share, presse-papiers), **FICHIER** (.csv, web
   seulement). Réception : **SCANNER** (`BarcodeDetector` + caméra arrière, si le navigateur le
   permet ; permission CAMERA facultative dans l'APK), **COLLER** (lien ou fichier), ou appareil
@@ -101,8 +105,10 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   avec version et nombre de stations, adresse nettoyée).
 - **Annuaire de test** (`TEST_DIRECTORY`, réseau `TEST`) : 12 stations `01` ALPHA → `12` LIMA
   (commandement, infanterie ×2, reco, génie, santé, logistique, transmissions, pompiers, SAMU,
-  police, secours), canaux 1 400 → 2 060 Hz, créneaux 1-12. **Appliqué au premier lancement**
-  (clé `sonochat-directory` absente) ; un annuaire effacé est enregistré vide et le reste.
+  police, secours), canaux **1 000 → 2 100 Hz**, créneaux 1-12, version 2. **Appliqué au premier
+  lancement** (clé `sonochat-directory` absente) et à la place de l'ancienne version 1 (canaux
+  1 400 → 2 060 Hz, reconnue par nom `TEST`, version 1, date 2026-10-03) ; un annuaire effacé est
+  enregistré vide et le reste.
   Bouton **TEST** dans l'outil pour y revenir. En-tête : clé `nom=` (nom du réseau, `net.name`).
 - **Serveur** (outil → section Serveur ; `server/annuaire-server.js`, service `chatmtx-api`,
   `/opt/chatmtx-api`, données `/var/lib/chatmtx/annuaires`, Caddy `reverse_proxy /api/*
@@ -301,14 +307,28 @@ stations simultanées sur des fréquences différentes sont toutes décodées (c
    seuil d'admission `RX_COARSE_MIN_SCORE` 15 (max du bruit mesuré 13-17). Sélection de
    **20 cases distinctes** (temps ≥ 20 symboles **ou** fréquence ≥ 30 Hz). Case affinée sans
    succès mémorisée (`_tried`) : jamais réessayée, laisse sa place aux suivantes
-3. **Raffinement fin séparable** (±½ symbole, ±2,6 Hz) + interpolation parabolique
-4. LDPC → CRC-14 → texte libre ou télémétrie ; tentative d'étendu (blocs avant **et** arrière).
-   `frame.freq` = fréquence affinée du ton 0
+   **Canaux connus** (`setChannels`, annuaire) : seuil d'admission bas `RX_CHANNEL_MIN_SCORE`
+   9 à ±15 Hz d'un canal (comme l'ancien décodeur à canal unique) ; ailleurs seuil large bande
+3. **Raffinement fin séparable** (±½ symbole au ¼, ±2,6 Hz), puis **temps au 1/32 de symbole**
+   (5 ms, ±1/8, interpolé : `_refineTimeGoertzel`) et fréquence interpolée. Indispensable : la
+   grille au ¼ de symbole est fixe (alignée sur la position absolue pour le cache), une
+   fenêtre décalée de 20 ms coûtait ~1 dB ; l'ancien décodeur avait une grille qui changeait à
+   chaque passe (tampon décalé de 12,5 symboles), donc plusieurs chances
+4. **BP** (offset min-sum) puis, si elle échoue, **OSD** (`osdDecode`, comme WSJT-X : 91
+   positions les plus fiables réencodées, ordre 1 complet + paires parmi les 50 moins fiables de
+   la base, `RX_OSD_PAIRS`) sur des **vraisemblances d'amplitude** (`_extractLLRAmplitude`,
+   meilleur ordre de fiabilité que les log-puissances) → CRC-14 → texte libre ou télémétrie.
+   Échec au meilleur point (synchro ≥ 20) : essais voisins ±1/16 de symbole, ±0,5 Hz.
+   Tentative d'étendu (blocs avant **et** arrière). `frame.freq` = fréquence du ton 0
+   OSD sur bruit pur : 1 CRC accepté sur 20 000, aucun de type valide ; 0 faux décodage en
+   10 min de bruit (12 canaux), passe moyenne 245 ms sur PC
 
-Mesures (`tests/multisignal.js`, comparaison à l'ancien décodeur 48 kHz canal unique) :
-10 stations simultanées 30/30, forte 0 dB + faible -16 dB à 120 Hz OK, 2 étendus simultanés
-non mélangés ; sensibilité **meilleure** qu'avant (-18 dB : 30/30 contre 21/30, -20 dB : 9/30
-contre 2/30). Passe ~110 ms au repos sur PC (cache), ~1,2 s avec 10 signaux, 2,5 s à froid.
+Mesures : `tests/multisignal.js` — 10 stations simultanées 30/30, forte 0 dB + faible -16 dB à
+120 Hz OK, 2 étendus simultanés non mélangés. **Sensibilité** (`tests/sensitivity.js`, flux
+réel, mêmes tirages, ancien décodeur 48 kHz à canal unique entre parenthèses) : -18 dB 20/20
+(19), **-19 dB 20/20 (17), -20 dB 15/20 (3), -21 dB 4/20 (0)** : ~1,5 dB de mieux. Avant
+l'affinage au 1/32 et l'OSD, le large bande perdait ~0,5 dB (-19 dB 13/20) : trames trouvées
+mais LDPC en échec. Passe ~250 ms au repos sur PC (cache), ~1,4 s avec 10 signaux, 2,5 s à froid.
 
 Dédoublonnage **par position absolue et fréquence** (`_decodedSpans` avec `freq`) : un candidat
 dont le centre tombe dans une trame déjà décodée **à moins de 30 Hz** est exclu avant la
@@ -367,7 +387,12 @@ node tests/tacmap.js
 node tests/ptt-timing.js
 
 # Efficacité selon la fréquence audio : chaîne BLU simulée (filtre 300-2700 Hz, distorsion) — ~8 min
-node tests/passband.js 8        # → bande utile 500-2500 Hz, canaux d'abord 1400-2500 (harmoniques)
+node tests/passband.js 8        # → bande utile 500-2500 Hz (décodage plat)
+
+# Sensibilité en conditions d'écoute réelles (flux 48 kHz, passes de 2 s, horloge ±150 ppm,
+# fréquence ±10 Hz), comparée à une autre version du modem — ~20 min avec l'ancien
+git show eeb6e19:ft8-modem.js > /tmp/ancien.js
+node tests/sensitivity.js 20 /tmp/ancien.js     # SNRS=-19,-20,-21 pour choisir les niveaux
 
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
 node tests/link-audio.js        # SNR -10 dB (argument : autre SNR) ; dont 3e station sur autre fréquence

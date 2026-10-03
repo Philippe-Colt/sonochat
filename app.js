@@ -150,6 +150,7 @@
       volume: settings.volume / 100,
     });
     modem.updateSettings({ pttLeadMs: settings.pttLeadMs, pttTailMs: settings.pttTailMs, voxTone: settings.voxTone });
+    modem.setChannels(networkFreqs());
 
     link = new SonoLink({
       transmit: (frames, opts) => modem.transmitSymbols(frames.map(frameToSymbols), opts),
@@ -1259,6 +1260,7 @@
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
     modem.updateSettings({ ...settings, baseFreq: txFreq(), volume: settings.volume / 100 });
+    modem.setChannels(networkFreqs());
     updateChannelInfo();
   }
 
@@ -1281,8 +1283,17 @@
     return ch && ch.slot && net && net.round ? { slot: ch.slot, slotS: net.slotS, round: net.round } : null;
   }
 
+  /** Canaux du réseau (annuaire) et le mien : le modem y cherche les signaux les plus faibles. */
+  function networkFreqs() {
+    const ch = directoryNet.channels || {};
+    return Object.keys(ch).map((k) => ch[k].freq).filter(Boolean).concat([txFreq()]);
+  }
+
   function applyChannel() {
-    if (modem) modem.updateSettings({ baseFreq: txFreq() });
+    if (modem) {
+      modem.updateSettings({ baseFreq: txFreq() });
+      modem.setChannels(networkFreqs());
+    }
     clearSpectrum();
     updateChannelInfo();
     updateBeaconInfo();
@@ -1304,7 +1315,13 @@
   function loadDirectory() {
     // Jamais d'annuaire enregistré (premier lancement) : annuaire de test générique.
     // Un annuaire effacé volontairement est enregistré vide et reste vide.
-    if (localStorage.getItem('sonochat-directory') === null) {
+    // Ancien annuaire de test (version 1, canaux 1 400 → 2 060 Hz) : remplacé par la version 2
+    let oldTest = false;
+    try {
+      const n = JSON.parse(localStorage.getItem('chatmtx-directory-net') || 'null');
+      oldTest = !!(n && n.net && n.net.name === 'TEST' && n.net.version === '1' && n.net.date === '2026-10-03');
+    } catch (e) { oldTest = false; }
+    if (localStorage.getItem('sonochat-directory') === null || oldTest) {
       const r = parseDirectory(TEST_DIRECTORY);
       directory = r.map;
       directoryUnits = r.units;

@@ -5,7 +5,7 @@
 // Usage : node tests/passband.js [essais par point, défaut 8]
 const fs = require('fs'), vm = require('vm');
 const src = fs.readFileSync(require('path').join(__dirname, '..', 'ft8-modem.js'), 'utf8');
-const ctx = { console: { log() {}, error: console.error, warn() {} }, performance, setTimeout, clearTimeout, Math, Float32Array, Float64Array,
+const ctx = { console: { log() {}, error: console.error, warn() {} }, performance, setTimeout, clearTimeout, Math, Float32Array, Float64Array, Uint32Array,
   Uint8Array, Int32Array, Int8Array, Uint16Array, Int16Array, Array, Set, Map, Object, String, Number, Promise, Date, Infinity, NaN, isNaN, parseInt, BigInt };
 vm.createContext(ctx);
 vm.runInContext(src + '\nthis.FT8=FT8;this.FT8Modem=FT8Modem;', ctx);

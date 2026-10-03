@@ -801,12 +801,12 @@ async function scenario(title, fn) {
     check('avant attribution : stations sans canal signalées', /sans canal ou créneau : PC, XY, ZZ/.test(await P.textContent('.dir-probs')));
     await clickOr(P, '.dir-tool [data-act="alloc"]');
     const rows = await P.$$eval('.dir-row span', (xs) => xs.map((x) => x.textContent));
-    check('ATTRIBUER : 1400/1460/1520 Hz, créneaux 1-3, sans conflit', rows.length === 3 && /Infanterie · 1400 Hz · créneau 1/.test(rows[0])
-      && /1460 Hz · créneau 2/.test(rows[1]) && /1520 Hz · créneau 3/.test(rows[2]) && await P.$('.dir-ok') !== null, rows);
+    check('ATTRIBUER : 1000/1100/1200 Hz, créneaux 1-3, sans conflit', rows.length === 3 && /Infanterie · 1000 Hz · créneau 1/.test(rows[0])
+      && /1100 Hz · créneau 2/.test(rows[1]) && /1200 Hz · créneau 3/.test(rows[2]) && await P.$('.dir-ok') !== null, rows);
     await clickOr(P, '.dir-tool [data-act="save"]');
     const st = await P.evaluate(() => ({ f: window.__modem.baseFreq, sub: document.querySelector('.dir-tool .mv-titles p').textContent,
       net: JSON.parse(localStorage.getItem('chatmtx-directory-net')) }));
-    check('ENREGISTRER : version 1, PC passe sur son canal', st.f === 1400 && /^Version 1 du \d{4}-\d\d-\d\d/.test(st.sub) && st.net.net.version === '1' && st.net.net.round === 3, st);
+    check('ENREGISTRER : version 1, PC passe sur son canal', st.f === 1000 && /^Version 1 du \d{4}-\d\d-\d\d/.test(st.sub) && st.net.net.version === '1' && st.net.net.round === 3, st);
     await clickOr(P, '.dir-tool [data-act="qr"]');
     const qr = await P.evaluate(() => ({ svg: !!document.querySelector('.dir-qr svg'), sub: document.querySelector('.dir-tool .mv-titles p').textContent }));
     check('QR code affiché', qr.svg && /Version 1/.test(qr.sub), qr);
@@ -825,9 +825,9 @@ async function scenario(title, fn) {
     const xy = await pages.XY.evaluate(() => ({ dir: JSON.parse(localStorage.getItem('sonochat-directory') || '{}'),
       net: JSON.parse(localStorage.getItem('chatmtx-directory-net') || 'null'), hash: location.hash,
       f: document.getElementById('setting-base-freq').value, dis: document.getElementById('setting-base-freq').disabled }));
-    check('XY : lien du QR code → import proposé et appliqué, adresse nettoyée', xy.dir.PC === 'F4MTX' && xy.net && xy.net.channels.XY.freq === 1460
+    check('XY : lien du QR code → import proposé et appliqué, adresse nettoyée', xy.dir.PC === 'F4MTX' && xy.net && xy.net.channels.XY.freq === 1100
       && xy.net.net.version === '1' && xy.hash === '' && dialogs.some((d) => /Importer l'annuaire version 1/.test(d)), [xy, dialogs]);
-    check('XY : canal 1460 Hz imposé', xy.f === '1460' && xy.dis, xy);
+    check('XY : canal 1100 Hz imposé', xy.f === '1100' && xy.dis, xy);
     // ZZ : lien collé dans l'outil
     await pages.ZZ.evaluate(() => DirectoryUI.open());
     await clickOr(pages.ZZ, '.dir-tool [data-act="paste"]');
@@ -835,14 +835,14 @@ async function scenario(title, fn) {
     await clickOr(pages.ZZ, '.dir-tool [data-act="ok"]');
     const zz = await pages.ZZ.evaluate(() => ({ msg: (document.querySelector('.dir-msg') || {}).textContent, rows: document.querySelectorAll('.dir-row').length,
       net: JSON.parse(localStorage.getItem('chatmtx-directory-net')) }));
-    check('ZZ : lien collé → annuaire version 1 appliqué', zz.rows === 3 && /Reçu version 1/.test(zz.msg) && zz.net.channels.ZZ.freq === 1520, zz);
+    check('ZZ : lien collé → annuaire version 1 appliqué', zz.rows === 3 && /Reçu version 1/.test(zz.msg) && zz.net.channels.ZZ.freq === 1200, zz);
     // Modification puis nouvelle version
     await clickOr(pages.ZZ, '.dir-row >> nth=2');
     await clickOr(pages.ZZ, '.dir-tool [data-f="1"]');
     await clickOr(pages.ZZ, '.dir-tool [data-act="ok"]');
     await clickOr(pages.ZZ, '.dir-tool [data-act="save"]');
     const zz2 = await pages.ZZ.evaluate(() => JSON.parse(localStorage.getItem('chatmtx-directory-net')));
-    check('modification : canal suivant (1580 Hz), version 2', zz2.channels.ZZ.freq === 1580 && zz2.net.version === '2', zz2);
+    check('modification : canal suivant (1300 Hz), version 2', zz2.channels.ZZ.freq === 1300 && zz2.net.version === '2', zz2);
     for (const name of STATIONS) pages[name].off('dialog', onDialog);
   });
 
@@ -853,7 +853,7 @@ async function scenario(title, fn) {
     await pages.ZZ.reload();
     const zz = await pages.ZZ.evaluate(() => ({ n: Object.keys(JSON.parse(localStorage.getItem('sonochat-directory'))).length,
       st: document.getElementById('directory-status').textContent, f: document.getElementById('setting-base-freq').value }));
-    check('premier lancement : annuaire de test (12 stations, réseau TEST), 05 sur 1640 Hz', zz.n === 12 && /reseau TEST, version 1/.test(zz.st) && zz.f === '1640', zz);
+    check('premier lancement : annuaire de test (12 stations, réseau TEST), 05 sur 1400 Hz', zz.n === 12 && /reseau TEST, version 2/.test(zz.st) && zz.f === '1400', zz);
     // Service des annuaires lancé en local ; les pages y sont redirigées
     const { spawn } = require('child_process'), os = require('os');
     const PORT = 19790 + Math.floor(Math.random() * 1000);
@@ -879,7 +879,7 @@ async function scenario(title, fn) {
       await P.click('.dir-tool [data-act="upload"]');
       await P.waitForFunction(() => /serveur/.test((document.querySelector('.dir-msg') || {}).textContent || '') || /\S/.test(document.getElementById('dir-srv-msg').textContent.replace('Envoi…', '')));
       const up = await P.textContent('.dir-msg');
-      check('ENVOYER : réseau créé sur le serveur, version 2 (nom ajouté)', /Réseau EXO-TEST créé sur le serveur, version 2, 12 stations/.test(up), up);
+      check('ENVOYER : réseau créé sur le serveur, version 3 (nom ajouté)', /Réseau EXO-TEST créé sur le serveur, version 3, 12 stations/.test(up), up);
       await X.evaluate(() => DirectoryUI.open());
       await X.fill('#dir-srv-name', 'EXO-TEST');
       await X.fill('#dir-srv-code', 'mauvais!');
@@ -888,17 +888,17 @@ async function scenario(title, fn) {
       check('CHARGER avec un code faux : refusé', true);
       await X.fill('#dir-srv-code', 'motdepasse');
       await X.click('.dir-tool [data-act="download"]');
-      await X.waitForFunction(() => /Reçu version 2/.test((document.querySelector('.dir-msg') || {}).textContent || ''));
+      await X.waitForFunction(() => /Reçu version 3/.test((document.querySelector('.dir-msg') || {}).textContent || ''));
       const xy = await X.evaluate(() => ({ rows: document.querySelectorAll('.dir-row').length, net: JSON.parse(localStorage.getItem('chatmtx-directory-net')).net,
         srv: JSON.parse(localStorage.getItem('chatmtx-directory-server')) }));
-      check('CHARGER : annuaire du serveur appliqué, nom et code mémorisés', xy.rows === 12 && xy.net.name === 'EXO-TEST' && xy.net.version === '2'
+      check('CHARGER : annuaire du serveur appliqué, nom et code mémorisés', xy.rows === 12 && xy.net.name === 'EXO-TEST' && xy.net.version === '3'
         && xy.srv.reseau === 'EXO-TEST' && xy.srv.code === 'motdepasse', xy);
       await P.click('.dir-row >> nth=0');
       await P.click('.dir-tool [data-f="1"]');
       await P.click('.dir-tool [data-act="ok"]');
       await P.click('.dir-tool [data-act="upload"]');
       await P.waitForFunction(() => /Enregistré sur le serveur/.test((document.querySelector('.dir-msg') || {}).textContent || ''));
-      check('modification renvoyée : version 3 sur le serveur', /version 3/.test(await P.textContent('.dir-msg')));
+      check('modification renvoyée : version 4 sur le serveur', /version 4/.test(await P.textContent('.dir-msg')));
     } finally {
       for (const name of ['PC', 'XY']) { await pages[name].unroute('**/api/annuaire/*'); pages[name].off('dialog', onDialog); }
       api.kill();

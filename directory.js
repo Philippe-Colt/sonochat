@@ -77,8 +77,14 @@ function unitSidc(unit) {
   return sidc.slice(0, 11) + ech.code + sidc.slice(12);
 }
 
-/** Réseau par défaut : créneaux de 15 s (une trame FT8 = 12,64 s), canaux au pas de 60 Hz. */
-const NET_DEFAULTS = { slotS: 15, round: 0, step: 60, bandMin: 500, bandMax: 2500, version: '', date: '', name: '' };
+/** Réseau par défaut : créneaux de 15 s (une trame FT8 = 12,64 s), canaux au pas de 100 Hz. */
+const NET_DEFAULTS = { slotS: 15, round: 0, step: 100, bandMin: 500, bandMax: 2500, version: '', date: '', name: '' };
+/**
+ * Réseau limité à 12 stations et 12 canaux : le décodeur cherche d'abord sur ces canaux,
+ * avec un seuil aussi bas que l'ancien décodeur à canal unique (signaux faibles), et
+ * l'écart de 100 Hz laisse de la marge aux décalages de fréquence.
+ */
+const MAX_STATIONS = 12;
 const FREQ_MIN = 200, FREQ_MAX = 3000;   // canal accepté (Hz)
 const SLOT_MAX = 98;
 const SLOT_S_MIN = 13, SLOT_S_MAX = 600; // un créneau contient au moins une trame
@@ -176,6 +182,7 @@ function parseDirectory(text) {
     net.round = maxSlot;
   }
   warnings.push(...checkChannels(channels));
+  if (Object.keys(map).length > MAX_STATIONS) warnings.push(Object.keys(map).length + ' stations : ' + MAX_STATIONS + ' au plus dans un réseau');
   return { map, units, imported: Object.keys(map).length, typed: Object.keys(units).length, skipped, channels, net, warnings };
 }
 
@@ -215,39 +222,42 @@ function lookupCall(directory, short) {
 
 /**
  * Annuaire de test générique, appliqué au premier lancement (aucun annuaire enregistré) :
- * 12 stations, alphabet OTAN, types variés, canaux et créneaux attribués par `allocate`.
+ * 12 stations, alphabet OTAN, types variés, canaux et créneaux attribués par `allocate`
+ * (1 000 → 2 100 Hz). La version 1 (1 400 → 2 060 Hz) est remplacée par l'application.
  */
 const TEST_DIRECTORY = [
-  '#reseau;nom=TEST;creneau=15;tour=12;version=1;date=2026-10-03',
-  '01;ALPHA;commandement;compagnie;1400;1',
-  '02;BRAVO;infanterie;section;1460;2',
-  '03;CHARLIE;infanterie;section;1520;3',
-  '04;DELTA;reconnaissance;groupe;1580;4',
-  '05;ECHO;genie;section;1640;5',
-  '06;FOXTROT;sante;groupe;1700;6',
-  '07;GOLF;logistique;section;1760;7',
-  '08;HOTEL;transmissions;groupe;1820;8',
-  '09;INDIA;pompiers;;1880;9',
-  '10;JULIET;samu;;1940;10',
+  '#reseau;nom=TEST;creneau=15;tour=12;version=2;date=2026-10-03',
+  '01;ALPHA;commandement;compagnie;1000;1',
+  '02;BRAVO;infanterie;section;1100;2',
+  '03;CHARLIE;infanterie;section;1200;3',
+  '04;DELTA;reconnaissance;groupe;1300;4',
+  '05;ECHO;genie;section;1400;5',
+  '06;FOXTROT;sante;groupe;1500;6',
+  '07;GOLF;logistique;section;1600;7',
+  '08;HOTEL;transmissions;groupe;1700;8',
+  '09;INDIA;pompiers;;1800;9',
+  '10;JULIET;samu;;1900;10',
   '11;KILO;police;;2000;11',
-  '12;LIMA;secours;;2060;12',
+  '12;LIMA;secours;;2100;12',
 ].join('\n') + '\n';
 
 // ---------------- Création d'annuaire (outil de l'application) ----------------
 
-const CLEAN_BAND_MIN = 1400; // au-dessus : harmoniques des tons hors de la bande (tests/passband.js)
+const PLAN_START = 1000; // premier canal attribué : le classique 1 000 Hz
 
 /**
- * Canaux dans l'ordre d'attribution : 1 400 Hz → haut de bande d'abord (sans harmonique
- * dans la bande), puis le bas de bande (500 → 1 340 au pas de 60).
+ * Les 12 canaux dans l'ordre d'attribution : 1 000 Hz → vers le haut au pas du réseau
+ * (100 Hz : 1 000 → 2 100), puis sous 1 000 Hz si la bande ne suffit pas. Sous ~1 350 Hz,
+ * l'harmonique 2 d'un étage audio saturé tombe dans la bande (-38 dBc mesuré,
+ * tests/passband.js) : sans effet sauf station locale très forte ; décodage plat 500-2 500 Hz.
  */
 function channelPlan(net) {
   const n = Object.assign({}, NET_DEFAULTS, net || {});
   const out = [];
-  const start = Math.max(n.bandMin, CLEAN_BAND_MIN);
+  const start = Math.max(n.bandMin, PLAN_START);
   for (let f = start; f <= n.bandMax; f += n.step) out.push(f);
-  for (let f = n.bandMin; f + n.step <= start && f <= n.bandMax; f += n.step) out.push(f);
-  return out;
+  for (let f = start - n.step; f >= n.bandMin; f -= n.step) out.push(f);
+  return out.slice(0, MAX_STATIONS);
 }
 
 /**
@@ -354,6 +364,6 @@ function directoryFromLink(link) {
 
 if (typeof module === 'object' && module.exports) {
   module.exports = { parseDirectory, lookupCall, parseUnitType, unitSidc, parseNetHeader, checkChannels, nextSlotStart,
-    channelPlan, allocate, serializeDirectory, toEntries, directoryLink, directoryFromLink, TEST_DIRECTORY,
+    channelPlan, allocate, serializeDirectory, toEntries, directoryLink, directoryFromLink, MAX_STATIONS, TEST_DIRECTORY,
     UNIT_TYPES, ECHELONS, NET_DEFAULTS, MIN_CHANNEL_GAP, SHORT_CALL_RE, LONG_CALL_RE };
 }

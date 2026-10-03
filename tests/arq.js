@@ -70,7 +70,7 @@ function makeStation(sim, name, opts = {}) {
       sim.setTimer(() => resolve({ aborted }), (t - sim.t) * 1000);
     }),
   });
-  st.link.onRx = (ev) => { st.rxEvents.push({ t: sim.t, ...ev }); st.rx.set(ev.id, ev); };
+  st.link.onRx = (ev) => { st.rxEvents.push({ t: sim.t, ...ev }); st.rx.set(ev.id, ev.superseded ? ev : { ...(st.rx.get(ev.id) || {}), ...ev }); };
   st.link.onTx = (ev) => st.txEvents.push({ t: sim.t, ...ev });
 
   // Réception d'une trame émise par `from` sur [fStart, fEnd]
@@ -406,6 +406,22 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     const texts = doneMsgs(B).map((m) => m.text).sort();
     check('deux étendus simultanés sur 2 fréquences : deux messages, non mélangés', texts.length === 2
       && texts[0] === 'PCXYPREMIER MESSAGE A' && texts[1] === 'ZZXYSECOND MESSAGE B', texts.join(' | '));
+  }
+
+  console.log('État de l\'accusé sur le message reçu');
+  {
+    // B reçoit pendant que C diffuse : son accusé attend, puis part, puis est envoyé
+    const { sim, A, B, C } = trio();
+    C.link.channelBusy = () => false;
+    sim.setTimer(() => C.link.send('CC99DIFFUSION LONGUE PENDANT LECHANGE', FT8.MODE_EXTENDED, { ack: false }), 8000);
+    await exchange(sim, A, 'PABBBONJOUR', FT8.MODE_STANDARD, true, 'BB');
+    const acks = B.rxEvents.filter((e) => e.ack).map((e) => e.ack);
+    const bAck = B.sent.find((x) => isAck(x.f));
+    const sendingAt = (B.rxEvents.find((e) => e.ack === 'sending') || {}).t;
+    check('accusé : en attente, puis en cours d\'émission au départ réel, puis envoyé', acks.join(',') === 'pending,sending,sent'
+      && Math.abs(sendingAt - bAck.start) < 0.01, acks.join(',') + ' · émission à ' + sendingAt + ' s, départ ' + (bAck && bAck.start));
+    const pendingAt = (B.rxEvents.find((e) => e.ack === 'pending') || {}).t;
+    check('« accusé envoyé » seulement à la fin de l\'émission', (B.rxEvents.find((e) => e.ack === 'sent') || {}).t >= bAck.end - 0.01 && pendingAt < sendingAt);
   }
 
   console.log('Pas d\'émission pendant une réception');

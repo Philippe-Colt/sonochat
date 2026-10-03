@@ -1534,3 +1534,7 @@ body.alert-9line .medevac-btn { color: #3a0810; }
   text-align: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
+
+/* Accusé en cours d'émission : clignote */
+.link-status.tx-live { color: var(--accent, #e94560); animation: tx-live 1s ease-in-out infinite; }
+@keyframes tx-live { 50% { opacity: 0.35; } }

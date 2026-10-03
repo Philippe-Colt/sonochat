@@ -165,6 +165,10 @@ RPT       : type=2 (2) | msgId (5) | seq (4)
   accusé après 26 s sans nouveau bloc (`RX_STABLE`, > 2 blocs pour un bloc perdu au milieu).
 - `RPT` : en session multi-trame, synchro Costas forte sans décodage (`onUndecoded`) → demande
   de répétition, une fois par trame attendue.
+- **État réel de l'accusé** sur le message reçu (`_sendAck` → `onRx {id, ack}`) :
+  `pending` « accuse en attente (canal occupe) » (autre émission ou trame qui arrive),
+  `sending` « emission de l'accuse... » (clignote, au départ réel : `opts.onStart` de
+  `_transmit`, après `_waitClear`), `sent` « accuse envoye » (fin de l'émission), `failed`.
 - Répétition reçue (accusé perdu) : reconnue (msgId/seq, ou même texte < 180 s), pas de
   doublon affiché, réaccusée. Un étendu reçu avec des trous est complété par sa répétition.
 - **Jamais d'émission pendant une réception** : toute émission (message, répétition, accusé,
@@ -309,7 +313,9 @@ arrêté). Pendant l'écoute :
   `start`/`stop`, demande `POST_NOTIFICATIONS` sur Android 13+). Vérifié sur émulateur API 36 :
   en arrière-plan, AppOps `RECORD_AUDIO` reste « running » avec le service, s'arrête sans.
   Plugins natifs : `Capacitor.Plugins.X` (pas de `registerPlugin` sans @capacitor/core empaqueté).
-- **Navigateur** : `navigator.wakeLock` (écran gardé allumé).
+- **Jamais de mise en veille** tant que ChatMTX est ouvert (pas seulement à l'écoute) :
+  appli → `FLAG_KEEP_SCREEN_ON` (`MainActivity`) ; navigateur → `navigator.wakeLock`
+  (`keepAwake`), redemandé au retour sur la page et au premier toucher.
 - **Partout, surveillance toutes les 0,5 s** (`micCheck`) : zéros exacts > 2 s sur l'analyseur
   (le système coupe le micro), piste `muted`/`ended`, contexte audio suspendu (`resume`) →
   bandeau orange « Micro pris par une autre application » (`#mic-lost`) et, au premier plan,

@@ -201,7 +201,7 @@ class SonoLink {
     this.channelBusy = io.channelBusy || (() => false);
 
     this.onTx = null;   // ({id, state, ...})
-    this.onRx = null;   // ({id, text, done, complete, frames?, total?, ackSent?} | {id, superseded: autreId})
+    this.onRx = null;   // ({id, text, done, complete, frames?, total?} | {id, ack: 'pending'|'sending'|'sent'|'failed'} | {id, superseded: autreId})
     this.onBeacon = null; // ({call, lat, lon}) : balise de position reçue
 
     this._txChain = Promise.resolve();
@@ -374,7 +374,11 @@ class SonoLink {
   _transmit(frames, opts = {}, own = true) {
     const run = this._txChain
       .then(() => this._waitClear(own))
-      .then(() => (own && this._sending && this._cancelled ? { aborted: true } : this.io.transmit(frames, opts)));
+      .then(() => {
+        if (own && this._sending && this._cancelled) return { aborted: true };
+        if (opts.onStart) opts.onStart(); // l'émission commence vraiment (canal libre)
+        return this.io.transmit(frames, opts);
+      });
     this._txChain = run.catch(() => {});
     return run;
   }
@@ -382,6 +386,21 @@ class SonoLink {
   /** Émission automatique (accusé, demande de répétition) : erreurs journalisées. */
   _transmitQuiet(frames) {
     this._transmit(frames, {}, false).catch((e) => this.log('TX erreur: ' + (e && e.message)));
+  }
+
+  /**
+   * Accusé d'un message reçu, avec son état réel sur ce message (onRx {id, ack}) :
+   * 'pending' en attente (canal occupé, autre émission), 'sending' en cours d'émission,
+   * 'sent' parti, 'failed' pas parti.
+   */
+  _sendAck(rxId, frames) {
+    this._emitRx({ id: rxId, ack: 'pending' });
+    this._transmit(frames, { onStart: () => this._emitRx({ id: rxId, ack: 'sending' }) }, false).then(
+      (r) => this._emitRx({ id: rxId, ack: r && r.aborted ? 'failed' : 'sent' }),
+      (e) => {
+        this.log('TX erreur: ' + (e && e.message));
+        this._emitRx({ id: rxId, ack: 'failed' });
+      });
   }
 
   /** Attend que plus aucune trame n'arrive (CLEAR_MAX au plus). */
@@ -501,7 +520,7 @@ class SonoLink {
 
     const willAck = d.ackReq && this.ackEnabled(text);
     if (isNew || willAck) {
-      this._emitRx({ id: s.rxId, text, done: complete, complete, frames: received, total: s.total, ackSent: willAck });
+      this._emitRx({ id: s.rxId, text, done: complete, complete, frames: received, total: s.total });
     }
     // Plus aucune trame (perdue, message pour une autre station, en l'air) : la
     // réception se termine incomplète au lieu de rester « en cours » ; une
@@ -517,7 +536,7 @@ class SonoLink {
     if (willAck) {
       s.lastAckAt = now;
       this.log('TX ACK ' + d.msgId + '/' + d.seq + (complete ? ' final' : ''));
-      this._transmitQuiet([{ kind: 'tele', value: SonoFrame.ackFrame(d.msgId, d.seq, complete, complete ? textHash(text) : 0, this.callsign()) }]);
+      this._sendAck(s.rxId, [{ kind: 'tele', value: SonoFrame.ackFrame(d.msgId, d.seq, complete, complete ? textHash(text) : 0, this.callsign()) }]);
     }
   }
 
@@ -631,14 +650,14 @@ class SonoLink {
     entry.timer = null;
     entry.done = true;
     const willAck = this.ackEnabled(entry.text);
-    this._emitRx({ id: entry.rxId, text: entry.text, done: true, complete: entry.complete, ackSent: willAck });
+    this._emitRx({ id: entry.rxId, text: entry.text, done: true, complete: entry.complete });
     this._ackText(entry, willAck);
   }
 
   _ackText(entry, willAck) {
     if (!willAck || !this.ackEnabled(entry.text)) return;
     this.log('TX ACK texte ' + textHash(entry.text).toString(16));
-    this._transmitQuiet([{ kind: 'tele', value: SonoFrame.ackText(textHash(entry.text), this.callsign()) }]);
+    this._sendAck(entry.rxId, [{ kind: 'tele', value: SonoFrame.ackText(textHash(entry.text), this.callsign()) }]);
   }
 
   /**

@@ -78,7 +78,7 @@ function makeStation(w, name, freq = 1000, call = name === 'A' ? 'PC' : 'K7') {
   });
   m.onFrame = (f) => st.link.handleFrame(f);
   m.onUndecoded = (i) => st.link.handleUndecoded(i);
-  st.link.onRx = (ev) => st.rx.set(ev.id, ev);
+  st.link.onRx = (ev) => st.rx.set(ev.id, ev.superseded ? ev : { ...(st.rx.get(ev.id) || {}), ...ev });
   st.link.onTx = (ev) => st.txEvents.push({ t: w.t, ...ev });
 
   // Micro : écrit l'air (sauf pendant sa propre émission) dans le ring buffer

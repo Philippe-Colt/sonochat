@@ -199,6 +199,12 @@
       }
       return;
     }
+    if (ev.text === undefined) {
+      // État de notre accusé pour ce message : en attente, en cours d'émission, parti
+      const ab = _rxBubbles.get(ev.id);
+      if (ab && ev.ack) { ab.ack = ev.ack; renderRxMeta(ab); }
+      return;
+    }
     const { call, to, body } = splitHeader(ev.text);
     // En-tete d'un 9-line pour nous (premier bloc, avant la fin du message) : alerte
     // En-tete d'un message d'alerte pour nous (9-line, METHANE, CONTACT, UXO), des le 1er bloc
@@ -220,13 +226,10 @@
     b.el.classList.toggle('receiving', !ev.done);
     b.el.classList.toggle('incomplete', ev.done && !ev.complete);
 
-    const parts = [];
-    if (ev.total > 1) parts.push(ev.frames + '/' + ev.total + ' trames');
-    if (ev.done && !ev.complete) parts.push('incomplet');
-    if (ev.ackSent) parts.push('accuse envoye');
-    const meta = b.el.querySelector('.msg-meta');
-    meta.innerHTML = timeNow() + ' <span class="rx-source">FT8</span>'
-      + (parts.length ? ' <span class="link-status">' + escapeHtml(parts.join(' · ')) + '</span>' : '');
+    b.frames = ev.total > 1 ? ev.frames + '/' + ev.total + ' trames' : '';
+    b.incomplete = ev.done && !ev.complete;
+    if (!b.time) b.time = timeNow();
+    renderRxMeta(b);
     scrollToBottom();
 
     if (ev.done) {
@@ -243,6 +246,24 @@
       saveHistory();
       if (ev.complete && to === myCallsign()) onFormattedRx(body, call);
     }
+  }
+
+  const ACK_LABEL = {
+    pending: 'accuse en attente (canal occupe)',
+    sending: 'emission de l\'accuse...',
+    sent: 'accuse envoye',
+    failed: 'accuse non envoye',
+  };
+
+  /** Ligne d'état d'une bulle reçue : trames, incomplet, état réel de notre accusé. */
+  function renderRxMeta(b) {
+    const parts = [];
+    if (b.frames) parts.push(b.frames);
+    if (b.incomplete) parts.push('incomplet');
+    if (b.ack) parts.push(ACK_LABEL[b.ack] || '');
+    const meta = b.el.querySelector('.msg-meta');
+    meta.innerHTML = (b.time || timeNow()) + ' <span class="rx-source">FT8</span>'
+      + (parts.length ? ' <span class="link-status' + (b.ack === 'sending' ? ' tx-live' : '') + '">' + escapeHtml(parts.join(' · ')) + '</span>' : '');
   }
 
   // === Messages formates : 9-line MEDEVAC et MIST (medevac.js, medevac-ui.js) ===
@@ -1010,19 +1031,29 @@
   const MIC_RETRY_MS = 4000;       // micro perdu depuis : on relance la capture
   const MIC_RETRY_GAP_MS = 10000;  // au plus une relance toutes les 10 s
   let micTimer = null, micZeroSince = 0, micLostSince = 0, micLastRetry = 0, micRestarting = false;
+  // Jamais de mise en veille tant que ChatMTX est ouvert : appli → FLAG_KEEP_SCREEN_ON
+  // (MainActivity) ; navigateur → verrou d'écran, redemandé à chaque retour sur la page
+  // (le navigateur le relâche quand la page est masquée).
   let screenLock = null;
+  function keepAwake() {
+    if (listenService || !navigator.wakeLock || screenLock || document.visibilityState !== 'visible') return;
+    navigator.wakeLock.request('screen').then((l) => {
+      screenLock = l;
+      l.addEventListener('release', () => { screenLock = null; });
+    }, () => {});
+  }
+  keepAwake();
+  document.addEventListener('visibilitychange', keepAwake);
+  // Certains navigateurs exigent un geste : nouvelle demande au premier toucher
+  document.addEventListener('pointerdown', keepAwake, { passive: true });
 
   function holdMic(on) {
     if (on) {
       if (listenService) listenService.start().catch((e) => console.warn('[MIC] service :', e && e.message));
-      else if (navigator.wakeLock && !screenLock) {
-        navigator.wakeLock.request('screen').then((l) => { screenLock = l; l.addEventListener('release', () => { screenLock = null; }); }, () => {});
-      }
       watchTrack();
       if (!micTimer) micTimer = setInterval(micCheck, 500);
     } else {
       if (listenService) listenService.stop().catch(() => {});
-      if (screenLock) { screenLock.release().catch(() => {}); screenLock = null; }
       clearInterval(micTimer);
       micTimer = null;
       setMicLost(false);

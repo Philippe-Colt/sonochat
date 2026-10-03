@@ -18,6 +18,7 @@ const LINK = {
   TYPE_DATA: 0,
   TYPE_ACK: 1,
   TYPE_RPT: 2,
+  TYPE_POS: 3,              // balise de position (en l'air, sans accusé)
 
   CHUNK_CHARS: 10,          // caractères par trame DATA (42^10 < 2^54)
   MAX_FRAMES: 16,           // seq sur 4 bits
@@ -125,6 +126,12 @@ const SonoFrame = {
   rpt(msgId, seq) {
     return packFields([[LINK.TYPE_RPT, 2], [msgId, 5], [seq, 4]]);
   },
+  /** Balise de position : indicatif + position au mètre (1e-5°), 64 bits sur 71, une seule trame FT8. */
+  pos(call, lat, lon) {
+    const la = Math.round((lat + 90) * 1e5);
+    const lo = ((Math.round((lon + 180) * 1e5) % 36000000) + 36000000) % 36000000;
+    return packFields([[LINK.TYPE_POS, 2], [encodeCall(call), 11], [la, 25], [lo, 26], [0, 7]]);
+  },
   parse(v71) {
     const r = fieldReader(v71);
     const type = Number(r(2));
@@ -142,6 +149,11 @@ const SonoFrame = {
     }
     if (type === LINK.TYPE_RPT) {
       return { type: 'rpt', msgId: Number(r(5)), seq: Number(r(4)) };
+    }
+    if (type === LINK.TYPE_POS) {
+      const call = decodeCall(r(11)), la = Number(r(25)), lo = Number(r(26));
+      if (r(7) !== 0n || la > 18000000 || lo >= 36000000) return null; // réservé : version future
+      return { type: 'pos', call, lat: la / 1e5 - 90, lon: lo / 1e5 - 180 };
     }
     return null;
   },
@@ -183,6 +195,7 @@ class SonoLink {
 
     this.onTx = null;   // ({id, state, ...})
     this.onRx = null;   // ({id, text, done, complete, frames?, total?, ackSent?} | {id, superseded: autreId})
+    this.onBeacon = null; // ({call, lat, lon}) : balise de position reçue
 
     this._txChain = Promise.resolve();
     this._sending = false;
@@ -233,6 +246,18 @@ class SonoLink {
     } finally {
       this._sending = false;
     }
+  }
+
+  /**
+   * Balise de position : une trame, en l'air, sans accusé. Jamais pendant un envoi
+   * ni par-dessus une réception en cours. Résout avec true si émise.
+   */
+  async beacon(lat, lon) {
+    if (this._sending) return false;
+    await this._waitRxQuiet();
+    if (this._sending) return false;
+    const r = await this._transmit([{ kind: 'tele', value: SonoFrame.pos(this.callsign(), lat, lon) }]);
+    return !r.aborted;
   }
 
   cancel() {
@@ -378,7 +403,9 @@ class SonoLink {
     if (frame.telemetry !== null && frame.telemetry !== undefined) {
       const ev = SonoFrame.parse(frame.telemetry);
       if (!ev) return;
-      if (ev.type === 'data') {
+      if (ev.type === 'pos') {
+        if (this.onBeacon) this.onBeacon(ev);
+      } else if (ev.type === 'data') {
         this._rxData(ev);
       } else if (this._waiter && this._waiter.match(ev)) {
         this.log('RX ' + ev.type + ' ' + JSON.stringify(ev));

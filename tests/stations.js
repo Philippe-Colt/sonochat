@@ -51,7 +51,7 @@ const now = () => (Date.now() - t0) / 1000;
 function teleType(v) {
   const b = BigInt(v);
   const type = Number(b >> 69n);
-  return { type: ['data', 'ack', 'rpt'][type] || '?', seq: type === 0 ? Number((b >> 60n) & 15n) : type === 2 ? Number((b >> 60n) & 15n) : null };
+  return { type: ['data', 'ack', 'rpt', 'pos'][type] || '?', seq: type === 0 ? Number((b >> 60n) & 15n) : type === 2 ? Number((b >> 60n) & 15n) : null };
 }
 
 // Appelée par la page émettrice pour chaque séquence de symboles
@@ -164,7 +164,11 @@ async function freshAll(extra = {}) {
         stationPos: '31U DQ 4825 1193', contactFreq: '145.500', ...(extra[name] || {}) }));
       localStorage.setItem('sonochat-directory', JSON.stringify({ PC: 'F4MTX', XY: 'F4XYZ' }));
     }, { name, extra });
-    await page.reload();
+    // Rechargement : parfois un script manque (aléa du banc, service worker en cours) → nouvel essai
+    for (let k = 0; k < 3; k++) {
+      await page.reload();
+      if (await page.evaluate(() => typeof SonoLink === 'function' && typeof LINK === 'object' && typeof TacMap === 'object')) break;
+    }
     await setupPage(page, name);
   }
   drop = () => false;
@@ -335,7 +339,7 @@ async function scenario(title, fn) {
   const srv = await serve();
   const browser = await chromium.launch({ executablePath: chromePath() });
   for (const name of STATIONS) {
-    const ctx = await browser.newContext({ viewport: { width: 400, height: 860 } });
+    const ctx = await browser.newContext({ viewport: { width: 400, height: 860 }, geolocation: { latitude: 48.8530, longitude: 2.3499, accuracy: 5 }, permissions: ['geolocation'] });
     const page = await ctx.newPage();
     page.on('pageerror', (e) => console.log(`    [${name}] ERREUR JS : ${e.message}`));
     await page.exposeFunction('__air', (from, fr, dur) => air(from, fr, dur));
@@ -714,6 +718,26 @@ async function scenario(title, fn) {
     check('symboles : unité PC, SALUTE, CONTACT (+ moi éventuel)', n.syms >= 3, n);
     check('trajet des 2 POSREP de PC', n.track === 1, n);
     check('trait observateur → contact', n.contactLine === 1, n);
+  });
+
+  await scenario('35. Balise de position automatique de PC', async () => {
+    await freshAll({ PC: { beaconOn: true, beaconMin: 10, beaconM: 500 } });
+    await sleep(6000); // GPS + premier passage (3 s) + émission accélérée
+    await waitQuiet(30);
+    const beacons = txLog.filter((x) => x.from === 'PC' && x.type === 'pos');
+    check('une trame de balise (télémétrie), rien d\'autre', beacons.length === 1 && txLog.filter((x) => x.from === 'PC').length === 1, txLog);
+    const posXY = await pages.XY.evaluate(() => JSON.parse(localStorage.getItem('chatmtx-positions') || '{}'));
+    const pt = posXY.PC && posXY.PC[posXY.PC.length - 1];
+    check('XY : position de PC au mètre', pt && Math.abs(pt[0] - 48.8530) < 2e-5 && Math.abs(pt[1] - 2.3499) < 2e-5, posXY);
+    const xy = await state('XY');
+    check('XY : rien dans le fil, aucune réponse', xy.bubbles.length === 0 && txBy('XY') === 0 && txBy('ZZ') === 0, xy.bubbles);
+    await pages.XY.evaluate(() => Object.defineProperty(navigator, 'onLine', { get: () => false }));
+    await pages.XY.click('#btn-map');
+    await sleep(1200);
+    const lbl = await pages.XY.evaluate(() => [...document.querySelectorAll('.tm-sym')].map((e) => e.textContent).join('|'));
+    check('carte de XY : unité F4MTX (balise)', /F4MTX/.test(lbl) && /balise/.test(lbl), lbl);
+    await sleep(3000);
+    check('pas de 2e balise avant 1 min', txLog.filter((x) => x.from === 'PC' && x.type === 'pos').length === 1);
   });
 
   await scenario('33. MEDEVAC ouvre directement le 9-line', async () => {

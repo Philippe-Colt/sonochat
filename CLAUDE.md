@@ -93,6 +93,7 @@ envoyé. Plus de case « Accusés ».
 
 Format des trames (71 bits, MSB d'abord) :
 ```
+POS       : type=3 (2) | indicatif (11) | lat×1e5 (25) | lon×1e5 (26) | 0 (7)  → balise, en l'air
 DATA      : type=0 (2) | msgId (5) | seq (4) | total-1 (4) | ackReq (1) | 10 car. base-42 (54)
 ACK trame : type=1 (2) | 0 (1) | msgId (5) | seq (4) | final (1) | CRC-16 message (16) | indicatif (11)
 ACK texte : type=1 (2) | 1 (1) | CRC-16 texte (16) | indicatif (11)
@@ -167,6 +168,17 @@ puis remarque libre facultative (≤ 128 car. au total)
   Web Share sinon, presse-papiers en dernier recours), QR code du texte en clair, Imprimer
   (`body.mv-printing` + `@media print` ; dans l'appli : passe par Partager).
 - Appli Android : permissions de localisation dans `AndroidManifest.xml`.
+
+## Balise de position automatique
+
+Paramètres : case « Balise de position automatique », **toutes les N min** et/ou **après D m**
+parcourus (l'un ou l'autre déclenche), jamais plus d'une fois par minute (`BEACON_MIN_GAP_MS`),
+jamais pendant un envoi ni par-dessus une réception (`SonoLink.beacon` attend `_waitRxQuiet`).
+Trame **POS** de télémétrie : **une seule trame FT8, position au mètre**, en l'air, sans accusé
+(plus court qu'un POSREP texte, qui ne fait que 100 m). GPS par `watchPosition` (appli au premier
+plan). Reçue : `onBeacon` → `positions` (`localStorage` `chatmtx-positions`, 100 points par
+station), **pas dans le fil** ; la carte place l'unité à sa dernière position (« balise HH:MM »)
+et prolonge son trajet (`collect(..., positions)`). Les versions sans type 3 l'ignorent.
 
 ## Carte tactique (`tacmap.js`, `tiles.js`)
 

@@ -179,6 +179,29 @@
                     <p class="setting-info" id="station-pos-info"></p>
                 </div>
                 <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="setting-beacon">
+                        Balise de position automatique
+                    </label>
+                    <div class="beacon-row">
+                        <label>Toutes les
+                            <select id="setting-beacon-min">
+                                <option value="0">jamais</option><option value="1">1 min</option><option value="2">2 min</option>
+                                <option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option>
+                                <option value="30">30 min</option><option value="60">60 min</option>
+                            </select>
+                        </label>
+                        <label>ou après
+                            <select id="setting-beacon-m">
+                                <option value="0">jamais</option><option value="100">100 m</option><option value="250">250 m</option>
+                                <option value="500">500 m</option><option value="1000">1 km</option><option value="2000">2 km</option>
+                                <option value="5000">5 km</option>
+                            </select>
+                        </label>
+                    </div>
+                    <p class="setting-info" id="beacon-info">Une trame FT8 (12,6 s), en l'air pour tous, sans accuse, position GPS au metre. Les autres stations la voient sur la carte, pas dans le fil.</p>
+                </div>
+                <div class="setting-group">
                     <label for="setting-contact-freq">Frequence de contact (MHz, ligne 2 du 9-line)</label>
                     <input type="text" id="setting-contact-freq" inputmode="decimal" autocomplete="off" placeholder="145.500">
                 </div>

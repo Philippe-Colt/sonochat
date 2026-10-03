@@ -142,9 +142,10 @@
    */
   /**
    * @param {function(string): string|null} [unitSidc]  SIDC de la station d'après l'annuaire
+   * @param {Object<string, Array<[lat, lon, t]>>} [positions]  balises de position reçues ou émises
    */
-  function collect(history, now, unitSidc) {
-    const marks = [], tracks = {}, units = {};
+  function collect(history, now, unitSidc, positions) {
+    const marks = [], tracks = {}, units = {}, trackPts = {};
     for (const msg of history) {
       if (!msg || msg.status === 'incomplet' || !M.isFormatted(msg.text)) continue;
       const dec = M.decode(msg.text);
@@ -154,7 +155,7 @@
       const pos = selfPosition(dec);
       if (pos) {
         units[call] = { lat: pos.lat, lon: pos.lon, t: msg.timestamp, lace: (units[call] || {}).lace || null, age };
-        if (dec.fmt === 'P') (tracks[call] = tracks[call] || []).push([pos.lat, pos.lon]);
+        if (dec.fmt === 'P') (trackPts[call] = trackPts[call] || []).push([pos.lat, pos.lon, msg.timestamp || 0]);
       }
       if (dec.fmt === 'L') {
         const lace = dec.data.state.map((x) => M.COLORS[x].code).join('');
@@ -163,10 +164,27 @@
       if (dec.fmt === 'P') continue; // l'unité est dessinée une fois, à sa dernière position
       for (const s of symbolsFor(dec, msg)) marks.push(Object.assign(s, { msg, opacity: ageOpacity(age), title: dec.kind }));
     }
+    // Balises : dernière position si plus récente que les messages, et points du trajet
+    for (const call of Object.keys(positions || {})) {
+      const pts = positions[call] || [];
+      if (!pts.length) continue;
+      for (const p of pts) (trackPts[call] = trackPts[call] || []).push(p);
+      const last = pts[pts.length - 1];
+      const u = units[call] || {};
+      if (u.t === undefined || last[2] >= u.t) {
+        const t = new Date(last[2]);
+        units[call] = Object.assign(u, { lat: last[0], lon: last[1], t: last[2], age: now - last[2],
+          beacon: 'balise ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') });
+      }
+    }
+    for (const call of Object.keys(trackPts)) {
+      tracks[call] = trackPts[call].sort((a, b) => a[2] - b[2]).map((p) => [p[0], p[1]]);
+    }
     for (const call of Object.keys(units)) {
       const u = units[call];
       if (u.lat === undefined) continue;
-      marks.push({ sidc: (unitSidc && unitSidc(call)) || FRIEND, lat: u.lat, lon: u.lon, label: call, info: u.lace || 'dernière position', unit: call,
+      marks.push({ sidc: (unitSidc && unitSidc(call)) || FRIEND, lat: u.lat, lon: u.lon, label: call,
+        info: [u.lace, u.beacon].filter(Boolean).join(' · ') || 'dernière position', unit: call,
         opacity: ageOpacity(u.age || 0), title: 'UNITÉ' });
     }
     return { marks, tracks, units };
@@ -405,7 +423,7 @@
     m.setView(start ? [start.lat, start.lon] : [46.6, 2.5], start ? 15 : 5);
     // Symboles déjà connus, pour se repérer
     const ref = L.layerGroup().addTo(m);
-    for (const s2 of collect(opts.history(), Date.now(), opts.unitSidc).marks) {
+    for (const s2 of collect(opts.history(), Date.now(), opts.unitSidc, opts.positions ? opts.positions() : null).marks) {
       L.marker([s2.lat, s2.lon], { icon: icon(s2.sidc, s2.unit ? opts.callLabel(s2.unit) : s2.label, ''), opacity: 0.7, interactive: false }).addTo(ref);
     }
     const posEl = p.querySelector('.tm-pick-pos');
@@ -452,7 +470,7 @@
   function refresh(first) {
     if (!map) return;
     const L = root.L;
-    const { marks, tracks } = collect(opts.history(), Date.now(), opts.unitSidc);
+    const { marks, tracks } = collect(opts.history(), Date.now(), opts.unitSidc, opts.positions ? opts.positions() : null);
     symbols.clearLayers();
     tracksLayer.clearLayers();
     for (const call of Object.keys(tracks)) {

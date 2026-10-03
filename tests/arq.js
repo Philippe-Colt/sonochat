@@ -363,6 +363,34 @@ const retries = (st) => st.txEvents.filter((e) => e.state === 'retry');
     check('BB n\'envoie ni accusé ni RPT', B.sent.length === 0, B.sent.length + ' émission(s)');
   }
 
+  console.log('Balise de position');
+  {
+    const v = SonoFrame.pos('PC', 48.858372, 2.294481);
+    const d = SonoFrame.parse(v);
+    check('trame pos : 71 bits, indicatif, position au mètre', v < (1n << 71n) && d.type === 'pos' && d.call === 'PC'
+      && Math.abs(d.lat - 48.858372) < 1e-5 && Math.abs(d.lon - 2.294481) < 1e-5, JSON.stringify(d));
+    const w = SonoFrame.parse(SonoFrame.pos('Z9', -33.8568, -151.2153));
+    check('hémisphères sud et ouest', Math.abs(w.lat + 33.8568) < 1e-5 && Math.abs(w.lon + 151.2153) < 1e-5, JSON.stringify(w));
+    const { sim, A, B, C } = trio();
+    const got = [];
+    B.link.onBeacon = (ev) => got.push('B' + ev.call);
+    C.link.onBeacon = (ev) => got.push('C' + ev.call);
+    let ok = null;
+    A.link.beacon(45.1, 5.2).then((r) => { ok = r; });
+    await sim.runUntil(() => ok !== null);
+    await sim.runUntil(() => false, sim.t + 60);
+    check('balise : une seule trame, reçue par BB et CC, personne ne répond', ok === true && A.sent.length === 1
+      && got.sort().join() === 'BPA,CPA' && B.sent.length === 0 && C.sent.length === 0, got.join() + ' / ' + A.sent.length);
+    const { sim: s2, A: A2 } = trio();
+    let r1 = null, rb = 'pas encore';
+    A2.link.send('PACC' + LONG, 'multi-frame', { ack: true, from: 'CC' }).then((r) => { r1 = r; });
+    await s2.flush();
+    A2.link.beacon(45, 5).then((r) => { rb = r; });
+    await s2.flush();
+    check('pas de balise pendant un envoi', rb === false, String(rb));
+    await s2.runUntil(() => r1 !== null);
+  }
+
   console.log('Pertes en début de message');
   {
     // Bloc 0 perdu à la 1re émission : la suite passe pour un message ; la répétition le remplace

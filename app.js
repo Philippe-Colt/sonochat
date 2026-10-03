@@ -47,6 +47,10 @@
   const medevacAlertEl = document.getElementById('medevac-alert');
   const medevacAlertInfo = document.getElementById('medevac-alert-info');
   const destCallEl = document.getElementById('dest-call');
+  const settingBeacon = document.getElementById('setting-beacon');
+  const settingBeaconMin = document.getElementById('setting-beacon-min');
+  const settingBeaconM = document.getElementById('setting-beacon-m');
+  const beaconInfo = document.getElementById('beacon-info');
   const settingCallsign = document.getElementById('setting-callsign');
   const myCallEl = document.getElementById('my-call');
   const btnDirectoryImport = document.getElementById('btn-directory-import');
@@ -138,6 +142,7 @@
       log: (m) => console.log('[LINK] ' + m),
     });
     modem.onFrame = (frame) => link.handleFrame(frame);
+    link.onBeacon = (ev) => storePosition(ev.call, ev.lat, ev.lon, Date.now());
     modem.onUndecoded = (info) => link.handleUndecoded(info);
     link.onRx = onLinkRx;
     link.onTx = onLinkTx;
@@ -507,6 +512,7 @@
       callLabel: (c) => (c && c !== '?' ? displayCall(c) : '?'),
       station: () => ({ pos: loadSettings().stationPos }),
       unitSidc: (c) => unitSidc(directoryUnits[c]),
+      positions: () => positions,
       unitLabel: (c) => {
         const u = directoryUnits[c];
         const t = u && UNIT_TYPES.find((x) => x.sidc === u.type);
@@ -671,6 +677,13 @@
     settingPttTail.value = settings.pttTailMs;
     settingVoxTone.checked = settings.voxTone === true;
     settingStationPos.value = settings.stationPos || '';
+    settingBeacon.checked = settings.beaconOn === true;
+    settingBeaconMin.value = String(settings.beaconMin);
+    settingBeaconM.value = String(settings.beaconM);
+    for (const el of [settingBeacon, settingBeaconMin, settingBeaconM]) {
+      el.addEventListener('change', () => { saveAndApplySettings(); applyBeacon(); });
+    }
+    applyBeacon();
     settingContactFreq.value = settings.contactFreq || '';
     updateStationPosInfo();
     settingTxMode.value = settings.txMode || 'extended';
@@ -1112,7 +1125,7 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
+    const defaults = { volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', beaconOn: false, beaconMin: 10, beaconM: 500, pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
@@ -1144,6 +1157,9 @@
       pttTailMs: clampMs(settingPttTail.value, 150),
       voxTone: settingVoxTone.checked,
       stationPos: settingStationPos.value.trim(),
+      beaconOn: settingBeacon.checked,
+      beaconMin: parseInt(settingBeaconMin.value, 10) || 0,
+      beaconM: parseInt(settingBeaconM.value, 10) || 0,
       contactFreq: settingContactFreq.value.trim(),
       medevacPeace: loadSettings().medevacPeace,
       v: 3,
@@ -1391,6 +1407,86 @@
     stationPosInfo.textContent = !v ? 'Utilisee par defaut pour la ligne 1 du 9-line.'
       : p ? (Medevac.toMgrs(p.lat, p.lon) || '') + ' · ' + Medevac.formatLatLon(p.lat, p.lon)
       : 'Position non reconnue : MGRS (31U DQ 4825 1193) ou degres (48.8584, 2.2945).';
+  }
+
+  // === Balise de position automatique (trame 'pos' de SonoLink, en l'air) ===
+  // Envoi si le temps OU la distance depuis la derniere balise est atteint, jamais
+  // plus d'une fois par minute, jamais pendant un envoi ou une reception.
+  const BEACON_MIN_GAP_MS = 60000;
+  const BEACON_CHECK_MS = 15000;
+  const POS_KEY = 'chatmtx-positions';
+  const POS_PER_STATION = 100;
+  let positions = {};        // indicatif -> [[lat, lon, t]] (balises recues et emises)
+  try { positions = JSON.parse(localStorage.getItem(POS_KEY) || '{}'); } catch (e) { positions = {}; }
+  let beaconWatch = null, beaconTimer = null, beaconFix = null, beaconBusy = false;
+  let beaconLast = null;
+  try { beaconLast = JSON.parse(localStorage.getItem('chatmtx-beacon-last') || 'null'); } catch (e) { beaconLast = null; }
+
+  function storePosition(call, lat, lon, t) {
+    if (!call || call === '?') return;
+    const list = positions[call] = positions[call] || [];
+    list.push([Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6, t]);
+    if (list.length > POS_PER_STATION) list.splice(0, list.length - POS_PER_STATION);
+    try { localStorage.setItem(POS_KEY, JSON.stringify(positions)); } catch (e) { /* stockage plein */ }
+    TacMap.refresh();
+  }
+
+  function distanceM(a, b) {
+    const R = 6371008.8, r = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function applyBeacon() {
+    const s = loadSettings();
+    const on = s.beaconOn && (s.beaconMin > 0 || s.beaconM > 0) && !!navigator.geolocation;
+    if (on && beaconWatch === null) {
+      beaconWatch = navigator.geolocation.watchPosition((g) => {
+        beaconFix = { lat: g.coords.latitude, lon: g.coords.longitude, acc: g.coords.accuracy };
+        updateBeaconInfo();
+      }, (e) => { beaconFix = null; updateBeaconInfo(e.code === 1 ? 'GPS refuse : autoriser la localisation.' : 'pas de position GPS.'); },
+      { enableHighAccuracy: true, maximumAge: 15000 });
+      beaconTimer = setInterval(beaconTick, BEACON_CHECK_MS);
+      setTimeout(beaconTick, 3000);
+    } else if (!on && beaconWatch !== null) {
+      navigator.geolocation.clearWatch(beaconWatch);
+      clearInterval(beaconTimer);
+      beaconWatch = beaconTimer = null;
+      beaconFix = null;
+    }
+    updateBeaconInfo();
+  }
+
+  function beaconTick() {
+    const s = loadSettings();
+    if (!s.beaconOn || !beaconFix || beaconBusy || !myCallsign() || link.busy || modem.transmitting) return;
+    const now = Date.now();
+    if (beaconLast && now - beaconLast.t < BEACON_MIN_GAP_MS) return;
+    const dueTime = !beaconLast || (s.beaconMin > 0 && now - beaconLast.t >= s.beaconMin * 60000);
+    const dueDist = !!beaconLast && s.beaconM > 0 && distanceM(beaconLast, beaconFix) >= s.beaconM;
+    if (!dueTime && !dueDist) return;
+    const fix = beaconFix;
+    beaconBusy = true;
+    link.beacon(fix.lat, fix.lon).then((sent) => {
+      beaconBusy = false;
+      if (!sent) return;
+      beaconLast = { t: Date.now(), lat: fix.lat, lon: fix.lon };
+      try { localStorage.setItem('chatmtx-beacon-last', JSON.stringify(beaconLast)); } catch (e) { /* idem */ }
+      storePosition(myCallsign(), fix.lat, fix.lon, beaconLast.t);
+      updateBeaconInfo();
+    }, () => { beaconBusy = false; });
+  }
+
+  function updateBeaconInfo(err) {
+    if (!beaconInfo) return;
+    const s = loadSettings();
+    const base = 'Une trame FT8 (12,6 s), en l\'air pour tous, sans accuse, position GPS au metre. Les autres stations la voient sur la carte, pas dans le fil.';
+    if (!s.beaconOn) { beaconInfo.textContent = base; return; }
+    if (!(s.beaconMin > 0 || s.beaconM > 0)) { beaconInfo.textContent = 'Choisir un intervalle de temps ou une distance.'; return; }
+    const last = beaconLast ? 'Derniere balise a ' + new Date(beaconLast.t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+      + ' (' + (Medevac.toMgrs(beaconLast.lat, beaconLast.lon) || '') + ')' : 'Aucune balise encore';
+    beaconInfo.textContent = last + ' · ' + (err ? err : beaconFix ? 'GPS ±' + Math.round(beaconFix.acc || 0) + ' m' : 'en attente du GPS...');
   }
 
   // === Service Worker ===

@@ -1455,3 +1455,7 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .tm-actions .hidden { display: none; }
 .tm-actions [data-act="here"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .tm-link { margin-left: 6px; border: 0; background: none; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+
+.beacon-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0; }
+.beacon-row label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--text-secondary); }
+.no-flex-gap .beacon-row > * + * { margin-left: 10px; }

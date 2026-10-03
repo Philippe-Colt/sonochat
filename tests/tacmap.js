@@ -78,13 +78,14 @@ console.log('Carroyage MGRS');
   check('libellés à 2 chiffres', lines.every((l) => /^\d\d$/.test(l.label)), lines.slice(0, 3).map((l) => l.label));
   check('zoom 10 : 10 km ; zoom 8 : 100 km', T.gridStep(10) === 10000 && T.gridStep(8) === 100000);
   check('trop de lignes : rien plutôt qu\'une carte illisible', T.gridLines(40, -5, 50, 10, 13).length === 0);
+  check('pas de grille sous le zoom 6 (plusieurs zones UTM à l\'écran)', T.gridLines(35, -10, 60, 25, 4).length === 0 && T.gridCells(35, -10, 60, 25, 5).length === 0);
   check('MGRS complet au mètre (5 + 5 chiffres)', /^31U DQ \d{5} \d{5}$/.test(M.toMgrs(48.853, 2.3499, 5)) && M.toMgrs(48.853, 2.3499) === '31U DQ 5231 1131', M.toMgrs(48.853, 2.3499, 5));
   const cells = T.gridCells(48.84, 2.33, 48.87, 2.37, 13);
   const okCell = cells.every((c) => { const m = M.toMgrs(c.lat + 0.002, c.lon + 0.003, 5).split(' '); return c.label === m[1] + ' ' + m[2].slice(0, 2) + ' ' + m[3].slice(0, 2); });
   check('1 km : « DQ 52 11 » dans chaque carré, cohérent avec un point du carré', cells.length > 10 && okCell, cells.slice(0, 3));
   check('10 km : « DP 2 7 » ; 100 km : « 31U DQ », zone voisine non étiquetée',
-    /^[A-Z]{2} \d \d$/.test(T.gridCells(48.5, 2, 49.2, 2.8, 10)[0].label) && T.gridCells(45, 0, 50, 6, 7).every((c) => /^31[TU] [A-Z]{2}$/.test(c.label)),
-    T.gridCells(45, 0, 50, 6, 7).map((c) => c.label));
+    /^[A-Z]{2} \d \d$/.test(T.gridCells(48.5, 2, 49.2, 2.8, 10)[0].label) && T.gridCells(45, 0, 50, 6, 7).length > 0
+    && T.gridCells(45, 0, 50, 6, 7).every((c) => /^31[TU] [A-Z]{2}$/.test(c.label)), T.gridCells(45, 0, 50, 6, 7).map((c) => c.label));
 }
 
 console.log('Tuiles hors ligne');

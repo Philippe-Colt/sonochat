@@ -191,8 +191,14 @@ Fond : **Plan IGN** (Géoplateforme WMTS PM, CORS ouvert, licence Etalab, « © 
 **IndexedDB** (`chatmtx-tiles`, clé `z/x/y`), PNG recompressées en **WebP** (~20 Ko/tuile).
 « Hors ligne » sur la carte : rayon 20 km, zooms 8-15 (~3 500 tuiles, ~77 Mo estimés à 48° N), 4 requêtes
 parallèles, 3 essais par tuile (l'IGN refuse parfois les rafales en HTTP 400), reprise.
-Sans tuile : fond monde `world.json` (Natural Earth 1:110m, 87 Ko) dans un calque **sous** les
-tuiles (pane `world`, z-index 150). Leaflet 1.9.4 vendorisé (`leaflet.js`, `leaflet.css`).
+Sans tuile : **fond monde embarqué** `world.json` (dans l'APK et précaché par le SW ; Natural
+Earth, domaine public ; 1,2 Mo, 393 Ko gzip) : 242 pays (contours 1:50m, noms français),
+361 lacs, 255 fleuves, 101 départements français (1:10m), 1 188 villes (grandes villes du monde,
+villes françaises ≥ 10 000 hab.). Format compact (lon/lat arrondis, Douglas-Peucker), dessiné en
+**canvas** dans le pane `world` (z-index 150, **sous** les tuiles IGN) par `worldLayer` ; noms de
+pays (zoom ≤ 7) et de villes selon leur rang et le zoom, 80 au plus. Régénération : script Python
+dans l'historique du commit « Fond monde embarqué ». Emplacements de tuiles vides masqués
+(`visibility: hidden`, sinon cadre gris). Grille MGRS à partir du zoom 6 seulement. Leaflet 1.9.4 vendorisé (`leaflet.js`, `leaflet.css`).
 
 ## Démodulation (RX)
 

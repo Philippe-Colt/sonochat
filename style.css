@@ -1439,3 +1439,8 @@ body.alert-9line .medevac-btn { color: #3a0810; }
   opacity: 0.8;
 }
 .tm-grid-lbl { font-size: 10px; opacity: 0.9; }
+
+/* Fond monde embarqué : noms de pays et de villes */
+.tm-w-country { font: 600 11px sans-serif; color: #6d6248; text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap; text-shadow: 0 0 2px #f2eee3; transform: translate(-50%, -50%); }
+.tm-w-city { font: 11px sans-serif; color: #333; white-space: nowrap; text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
+.tm-w-city i { display: inline-block; width: 5px; height: 5px; margin-right: 3px; border-radius: 50%; background: #333; vertical-align: middle; }

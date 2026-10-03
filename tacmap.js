@@ -176,6 +176,9 @@
   // CARROYAGE MGRS
   // ============================================================
 
+  // En dessous, une seule zone UTM couvrirait plusieurs zones : grille fausse et illisible
+  const GRID_MIN_ZOOM = 6;
+
   /** Pas du carroyage (m) selon le zoom : 100 km, 10 km, 1 km. */
   const gridStep = (z) => (z <= 9 ? 100000 : z <= 12 ? 10000 : 1000);
 
@@ -186,7 +189,7 @@
   function gridLines(south, west, north, east, zoom) {
     const step = gridStep(zoom);
     const cLat = (south + north) / 2, cLon = (west + east) / 2;
-    if (cLat < -80 || cLat >= 84) return [];
+    if (zoom < GRID_MIN_ZOOM || cLat < -80 || cLat >= 84) return [];
     const zone = M.utmZone(cLat, cLon);
     const sh = cLat < 0;
     const corners = [[south, west], [south, east], [north, west], [north, east]].map(([la, lo]) => M.toUtm(la, lo, zone));
@@ -227,7 +230,7 @@
   function gridCells(south, west, north, east, zoom) {
     const step = gridStep(zoom);
     const cLat = (south + north) / 2, cLon = (west + east) / 2;
-    if (cLat < -80 || cLat >= 84) return [];
+    if (zoom < GRID_MIN_ZOOM || cLat < -80 || cLat >= 84) return [];
     const zone = M.utmZone(cLat, cLon);
     const sh = cLat < 0;
     const corners = [[south, west], [south, east], [north, west], [north, east]].map(([la, lo]) => M.toUtm(la, lo, zone));
@@ -292,6 +295,7 @@
         <div class="tm-panel hidden" id="tm-panel"></div>`;
       document.body.appendChild(overlay);
       map = baseMap(overlay.querySelector('#tm-map'));
+      root.__tmMap = map; // accès pour les tests navigateur (tests/stations.js, captures)
       // Coordonnée complète (MGRS au mètre + degrés) du centre, en haut à droite
       const Coord = L.Control.extend({ onAdd: () => { const d = L.DomUtil.create('div', 'tm-coord'); L.DomEvent.disableClickPropagation(d); return d; } });
       coordCtl = new Coord({ position: 'topright' }).addTo(map);
@@ -319,17 +323,59 @@
     }
   }
 
-  /** Carte de base : fond monde sous les tuiles IGN (sinon il les recouvre), tuiles hors ligne. */
+  /** Carte de base : fond monde embarqué sous les tuiles IGN (sinon il les recouvre), tuiles hors ligne. */
   function baseMap(el) {
     const L = root.L;
     const m = L.map(el, { zoomControl: true, attributionControl: true, worldCopyJump: true });
     m.attributionControl.setPrefix(false);
+    m.attributionControl.addAttribution('Natural Earth');
     m.createPane('world').style.zIndex = 150;
-    fetch('world.json').then((r) => r.json()).then((g) => {
-      L.geoJSON(g, { pane: 'world', style: { color: '#7a8a99', weight: 1, fillColor: '#d9d4c7', fillOpacity: 1 }, interactive: false }).addTo(m);
-    }).catch(() => {});
+    worldLayer(L, m);
     root.Tiles.layer(L).addTo(m);
     return m;
+  }
+
+  let worldData = null;
+  const loadWorld = () => worldData || (worldData = fetch('world.json').then((r) => r.json()));
+  const ll = (r) => r.map((p) => [p[1], p[0]]);
+
+  /**
+   * Fond monde minimal embarqué (Natural Earth, domaine public) : pays, lacs, fleuves,
+   * départements français, noms de pays et de villes selon le zoom. Canvas : fluide
+   * sur un vieux téléphone. Sous les tuiles IGN, qui le recouvrent là où elles existent.
+   */
+  function worldLayer(L, m) {
+    const R = L.canvas({ pane: 'world', padding: 0.3 });
+    const labels = L.layerGroup().addTo(m);
+    loadWorld().then((w) => {
+      const base = { renderer: R, pane: 'world', interactive: false };
+      for (const c of w.countries) {
+        L.polygon(c.p.map((poly) => poly.map(ll)), Object.assign({ color: '#a09478', weight: 0.8, fillColor: '#f2eee3', fillOpacity: 1 }, base)).addTo(m);
+      }
+      for (const d of w.depts) {
+        L.polygon(d.p.map((poly) => poly.map(ll)), Object.assign({ color: '#b9ab8c', weight: 0.6, dashArray: '3 3', fill: false }, base)).addTo(m);
+      }
+      for (const lk of w.lakes) L.polygon(lk.map((poly) => poly.map(ll)), Object.assign({ color: '#7fb2c4', weight: 0.6, fillColor: '#aad3df', fillOpacity: 1 }, base)).addTo(m);
+      for (const rv of w.rivers) L.polyline(rv.g.map(ll), Object.assign({ color: '#7fb2c4', weight: rv.r <= 3 ? 1.4 : 0.9 }, base)).addTo(m);
+      const draw = () => {
+        labels.clearLayers();
+        const z = m.getZoom(), b = m.getBounds().pad(0.1);
+        let n = 0;
+        if (z <= 7) {
+          for (const c of w.countries) {
+            if (c.r > z + 1 || !b.contains([c.l[1], c.l[0]])) continue;
+            L.marker([c.l[1], c.l[0]], { pane: 'world', interactive: false, icon: L.divIcon({ className: 'tm-w-country', html: esc(c.n), iconSize: null }) }).addTo(labels);
+          }
+        }
+        for (const ct of w.cities) {
+          const show = ct[4] ? z >= 7 || ct[3] <= z - 1 : ct[3] <= z - 2;
+          if (!show || !b.contains([ct[1], ct[2]]) || n++ > 80) continue;
+          L.marker([ct[1], ct[2]], { pane: 'world', interactive: false, icon: L.divIcon({ className: 'tm-w-city', html: '<i></i>' + esc(ct[0]), iconSize: null, iconAnchor: [3, 3] }) }).addTo(labels);
+        }
+      };
+      m.on('zoomend moveend', draw);
+      draw();
+    }).catch(() => {});
   }
 
   /**

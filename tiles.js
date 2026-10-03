@@ -143,7 +143,8 @@
         img.alt = '';
         const key = coords.z + '/' + coords.x + '/' + coords.y;
         const show = (blob) => {
-          if (!blob) { done(null, img); return; }
+          // Pas de tuile : emplacement masqué (une image vide garderait un cadre gris)
+          if (!blob) { img.style.visibility = 'hidden'; done(null, img); return; }
           const url = URL.createObjectURL(blob);
           img.onload = () => { URL.revokeObjectURL(url); done(null, img); };
           img.onerror = () => { URL.revokeObjectURL(url); done(null, img); };

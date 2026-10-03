@@ -172,7 +172,9 @@
     }
     const { call, to, body } = splitHeader(ev.text);
     // En-tete d'un 9-line pour nous (premier bloc, avant la fin du message) : alerte
-    if (body.startsWith('/9') && to === myCallsign()) enterMedevacAlert(call);
+    // En-tete d'un message d'alerte pour nous (9-line, METHANE, CONTACT, UXO), des le 1er bloc
+    const alertTitle = Medevac.alertTitle(body);
+    if (alertTitle && to === myCallsign()) enterMedevacAlert(call, alertTitle);
     let b = _rxBubbles.get(ev.id);
     if (!b) {
       const el = addMessage(body, 'received', false, 0, call, to);
@@ -228,12 +230,16 @@
   const ALERT_KEY = 'chatmtx-medevac-alert';
   let medevacAlert = null;   // {by, time, prevMode, prevDest}
 
-  function enterMedevacAlert(call) {
+  function enterMedevacAlert(call, title) {
     if (medevacAlert) {
-      if (call && call !== medevacAlert.by) { medevacAlert.by = call; showMedevacAlert(); }
+      if ((call && call !== medevacAlert.by) || title !== medevacAlert.title) {
+        medevacAlert.by = call || medevacAlert.by;
+        medevacAlert.title = title || medevacAlert.title;
+        showMedevacAlert();
+      }
       return;
     }
-    medevacAlert = { by: call || '', time: timeNow(), prevMode: settingTxMode.value, prevDest: getDest() };
+    medevacAlert = { by: call || '', title: title || '9-LINE', time: timeNow(), prevMode: settingTxMode.value, prevDest: getDest() };
     setTxMode('extended');
     if (CALL_RE.test(call || '')) setDest(call);
     showMedevacAlert();
@@ -256,6 +262,7 @@
     document.body.classList.add('alert-9line');
     medevacAlertEl.classList.remove('hidden');
     const by = medevacAlert.by ? displayCall(medevacAlert.by) : '?';
+    document.getElementById('medevac-alert-title').textContent = 'ALERTE ' + (medevacAlert.title || '9-LINE');
     medevacAlertInfo.textContent = `de ${by} a ${medevacAlert.time.slice(0, 5)} · mode etendu, reponse vers ${by}`;
   }
 
@@ -491,7 +498,11 @@
     document.getElementById('btn-alert-end').addEventListener('click', endMedevacAlert);
     btnMedevac.addEventListener('click', () => {
       if (link.busy) return;
-      MedevacUI.openChooser();
+      MedevacUI.openNine(); // 9-line direct
+    });
+    document.getElementById('btn-msg').addEventListener('click', () => {
+      if (link.busy) return;
+      MedevacUI.openChooser(); // tous les messages formates, par type
     });
     settingStationPos.addEventListener('change', () => { saveAndApplySettings(); updateStationPosInfo(); });
     settingContactFreq.addEventListener('change', saveAndApplySettings);

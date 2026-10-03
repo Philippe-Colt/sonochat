@@ -100,10 +100,19 @@
     'Perfusion, IO', 'Antalgique', 'Attelle', 'Couverture (hypothermie)', 'Acide tranexamique',
   ];
 
+  const SEX = [{ code: 'H', label: 'Homme' }, { code: 'F', label: 'Femme' }];
+  const HEMO = [
+    { code: 'N', label: 'Pas d\'hémorragie' },
+    { code: 'C', label: 'Hémorragie contrôlée' },
+    { code: 'A', label: 'Hémorragie active' },
+  ];
+
   const MAX_COUNT = 9;       // blessés par catégorie d'urgence (ligne 3)
   const MAX_TOTAL = 5 * MAX_COUNT; // ligne 5 : couchés ≤ total ligne 3, assis = le reste
   const MAX_MIST = 11;       // fiches MIST seules par message (en-tête 4 + 3 + 11 × 11 = 128)
   const MAX_MIST_WITH_NINE = 9; // après un 9-line (4 + 22 + 3 + 9 × 11 = 128)
+  const MAX_ATMIST = 9;      // AT-MIST seules (4 + 3 + 9 × 13 = 124)
+  const MAX_ATMIST_WITH_NINE = 7; // après un 9-line (4 + 22 + 3 + 7 × 13 = 120)
 
   // Rangs des champs, du plus significatif au moins significatif
   // Lignes 6 et 9 et guerre/paix en un seul rang : guerre = sécurité × NRBC (4 × 16),
@@ -122,6 +131,13 @@
     ['regions', 1024], ['avpu', 5], ['pulse', 52], ['resp', 32], ['spo2', 52], ['treat', 1024],
   ];
 
+  // AT-MIST (bilan victime) : MIST + âge, sexe, hémorragie ; sans version (marqueur /A).
+  // Choisi automatiquement si l'un de ces champs est renseigné, sinon MIST (plus court)
+  const ATMIST_RADIX = [
+    ['patient', 16], ['prec', 5], ['time', 289], ['age', 102], ['sex', 3], ['mech', 12],
+    ['regions', 1024], ['avpu', 5], ['hemo', 4], ['pulse', 52], ['resp', 32], ['spo2', 52], ['treat', 1024],
+  ];
+
   function digitsFor(radix) {
     let max = 1n;
     for (const [, r] of radix) max *= BigInt(r);
@@ -131,6 +147,7 @@
   }
   const NINE_LEN = digitsFor(NINE_RADIX);   // 20
   const MIST_LEN = digitsFor(MIST_RADIX);   // 11
+  const ATMIST_LEN = digitsFor(ATMIST_RADIX); // 13
 
   function pack(radix, values, len) {
     let n = 0n;
@@ -253,6 +270,26 @@
     }, MIST_LEN);
   }
 
+  const isAtMist = (p) => (p.age !== null && p.age !== undefined) || (p.sex !== null && p.sex !== undefined)
+    || (p.hemo !== null && p.hemo !== undefined);
+
+  function encodeAtMist(p) {
+    const base = unpack(MIST_RADIX, encodeMist(p));
+    const opt = (x) => (x === null || x === undefined ? 0 : x + 1);
+    return pack(ATMIST_RADIX, {
+      ...base, age: p.age === null || p.age === undefined ? 0 : 1 + Math.max(0, Math.min(100, Math.round(p.age))),
+      sex: opt(p.sex), hemo: opt(p.hemo),
+    }, ATMIST_LEN);
+  }
+
+  function decodeAtMist(str) {
+    const v = unpack(ATMIST_RADIX, str);
+    if (!v || v.mech >= MECHANISM.length) return null;
+    const p = decodeMist(pack(MIST_RADIX, { ...v, version: VERSION }, MIST_LEN));
+    if (!p) return null;
+    return { ...p, age: v.age ? v.age - 1 : null, sex: v.sex ? v.sex - 1 : null, hemo: v.hemo ? v.hemo - 1 : null };
+  }
+
   function decodeMist(str) {
     const v = unpack(MIST_RADIX, str);
     if (!v || v.version !== VERSION || v.mech >= MECHANISM.length) return null;
@@ -270,6 +307,314 @@
   }
 
   // ============================================================
+  // FORMATS DÉCLARÉS PAR LEURS CHAMPS (METHANE, renseignement, SALUTE...)
+  // Pas de champ version : un format qui change prend une nouvelle lettre.
+  // Ordre des champs et des listes = format sur l'air : ne jamais réordonner.
+  // ============================================================
+
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+  const opt = (v) => v === null || v === undefined;
+
+  /** Types de champs : rangs (un ou plusieurs), valeur → entiers, entiers → valeur. */
+  const TYPES = {
+    choice: { // indice dans options ; optional : null possible (« ? »)
+      radix: (f) => [f.options.length + (f.optional ? 1 : 0)],
+      enc: (f, v) => [f.optional ? (opt(v) ? 0 : v + 1) : (v || 0)],
+      dec: (f, [n]) => (f.optional ? (n ? n - 1 : null) : n),
+    },
+    multi: {
+      radix: (f) => [1 << f.options.length],
+      enc: (f, v) => [maskOf(v)],
+      dec: (f, [n]) => bitsOf(n, f.options.length),
+    },
+    count: {
+      radix: (f) => [f.max + 1],
+      enc: (f, v) => [clamp(Math.round(v || 0), 0, f.max)],
+      dec: (f, [n]) => n,
+    },
+    number: { // min..max au pas step ; 0 = inconnu
+      radix: (f) => [Math.round((f.max - f.min) / f.step) + 2],
+      enc: (f, v) => [opt(v) ? 0 : 1 + clamp(Math.round((v - f.min) / f.step), 0, Math.round((f.max - f.min) / f.step))],
+      dec: (f, [n]) => (n ? f.min + (n - 1) * f.step : null),
+    },
+    position: { // precision : 4 → 1e-4° (~10 m), 3 → 1e-3° (~100 m)
+      radix: (f) => [180 * 10 ** f.precision + 1, 360 * 10 ** f.precision],
+      enc: (f, v) => {
+        const k = 10 ** f.precision;
+        return [Math.round((v.lat + 90) * k), ((Math.round((v.lon + 180) * k) % (360 * k)) + 360 * k) % (360 * k)];
+      },
+      dec: (f, [a, b]) => ({ lat: a / 10 ** f.precision - 90, lon: b / 10 ** f.precision - 180 }),
+    },
+    time: { // {h, m} UTC au pas de 5 min ; 0 = inconnue
+      radix: () => [289],
+      enc: (f, v) => [opt(v) ? 0 : 1 + Math.round((v.h * 60 + v.m) / 5) % 288],
+      dec: (f, [n]) => (n ? { h: Math.floor((n - 1) * 5 / 60), m: (n - 1) * 5 % 60 } : null),
+    },
+    dtg: { // {d, h, m} jour du mois + heure UTC ; 0 = inconnu
+      radix: () => [31 * 288 + 1],
+      enc: (f, v) => [opt(v) ? 0 : 1 + (clamp(v.d, 1, 31) - 1) * 288 + Math.round((v.h * 60 + v.m) / 5) % 288],
+      dec: (f, [n]) => {
+        if (!n) return null;
+        const t = (n - 1) % 288;
+        return { d: Math.floor((n - 1) / 288) + 1, h: Math.floor(t * 5 / 60), m: t * 5 % 60 };
+      },
+    },
+    freq: {
+      radix: () => [224001],
+      enc: (f, v) => [encodeFreq(v)],
+      dec: (f, [n]) => decodeFreq(n),
+    },
+    grid: { // un état par ligne (LACE : vert/orange/rouge/noir)
+      radix: (f) => [f.states.length ** f.items.length],
+      enc: (f, v) => [(v || []).reduce((a, x) => a * f.states.length + (x || 0), 0)],
+      dec: (f, [n]) => {
+        const out = [];
+        for (let i = 0; i < f.items.length; i++) { out.unshift(n % f.states.length); n = Math.floor(n / f.states.length); }
+        return out;
+      },
+    },
+  };
+
+  const radixOf = (fmt) => fmt.fields.flatMap((f) => TYPES[f.type].radix(f).map((r, i) => [f.key + '.' + i, r]));
+  const fieldsLen = (fmt) => fmt.len || (fmt.len = digitsFor(radixOf(fmt)));
+
+  function packFields(fmt, data) {
+    const values = {};
+    for (const f of fmt.fields) TYPES[f.type].enc(f, data[f.key]).forEach((v, i) => { values[f.key + '.' + i] = v; });
+    return pack(radixOf(fmt), values, fieldsLen(fmt));
+  }
+
+  function unpackFields(fmt, str) {
+    const v = unpack(radixOf(fmt), str);
+    if (!v) return null;
+    const out = {};
+    for (const f of fmt.fields) {
+      const parts = TYPES[f.type].radix(f).map((_, i) => v[f.key + '.' + i]);
+      if (f.type === 'choice' && !f.optional && parts[0] >= f.options.length) return null;
+      out[f.key] = TYPES[f.type].dec(f, parts);
+    }
+    return out;
+  }
+
+  // --- Aides d'affichage communes ---
+  const L = (list) => list.map((x) => (typeof x === 'string' ? { code: '', label: x } : x));
+  const one = (opts, i) => (i === null || i === undefined ? null : opts[i]);
+  const many = (opts, idx) => idx.map((i) => opts[i]);
+  const lbl = (items, none) => (items.length ? items.map((x) => x.label).join(', ') : none);
+  const cds = (items) => items.map((x) => x.code).filter(Boolean).join('');
+  const posLine = (n, label, p) => {
+    const m = toMgrs(p.lat, p.lon);
+    return { n, label, code: m || '', text: formatLatLon(p.lat, p.lon) };
+  };
+  const hhmm = (t) => (t ? `${pad2(t.h)}:${pad2(t.m)}Z` : 'inconnue');
+
+  const COLORS = [
+    { code: 'V', label: 'Vert' }, { code: 'O', label: 'Orange' }, { code: 'R', label: 'Rouge' }, { code: 'N', label: 'Noir' },
+  ];
+  const DIR8 = [['N', 'le nord'], ['NE', 'le nord-est'], ['E', 'l\'est'], ['SE', 'le sud-est'], ['S', 'le sud'],
+    ['SO', 'le sud-ouest'], ['O', 'l\'ouest'], ['NO', 'le nord-ouest']].map(([code, label]) => ({ code, label }));
+
+  /** Registre des formats génériques, par lettre de marqueur. */
+  const FORMATS = {};
+  function define(fmt) { FORMATS[fmt.marker] = fmt; return fmt; }
+
+  define({
+    marker: 'E', title: 'METHANE', family: 'sante', alert: true,
+    desc: 'Événement majeur : lieu, type, dangers, accès, victimes, moyens',
+    fields: [
+      { key: 'major', type: 'choice', tag: 'M', label: 'Événement majeur', options: L([
+        { code: 'D', label: 'Déclaré' }, { code: 'P', label: 'Pré-alerte' }]) },
+      { key: 'pos', type: 'position', precision: 4, tag: 'E', label: 'Lieu exact' },
+      { key: 'type', type: 'choice', tag: 'T', label: 'Type', options: L([
+        'Accident routier', 'Ferroviaire', 'Aérien', 'Maritime', 'Incendie', 'Explosion', 'Effondrement',
+        'NRBC', 'Inondation', 'Tempête', 'Séisme', 'Attentat, tuerie', 'Mouvement de foule',
+        'Accident industriel', 'Autre']) },
+      { key: 'hazards', type: 'multi', tag: 'H', label: 'Dangers', none: 'Aucun', options: L([
+        'Incendie', 'Explosion', 'Produits chimiques', 'Gaz', 'Électricité', 'Effondrement', 'Eau',
+        'Tireur, menace', 'Radiologique', 'Circulation']) },
+      { key: 'access', type: 'multi', tag: 'A', label: 'Accès', none: 'Non précisé', options: L([
+        'Par le nord', 'Par l\'est', 'Par le sud', 'Par l\'ouest', 'Hélicoptère possible', 'Accès difficile']) },
+      { key: 'ua', type: 'count', max: 99, tag: 'N', label: 'UA · urgences absolues', group: 'N', groupTitle: 'Nombre de victimes' },
+      { key: 'ur', type: 'count', max: 99, tag: 'N', label: 'UR · urgences relatives', group: 'N' },
+      { key: 'imp', type: 'count', max: 99, tag: 'N', label: 'Impliqués', group: 'N' },
+      { key: 'dcd', type: 'count', max: 99, tag: 'N', label: 'Décédés', group: 'N' },
+      { key: 'onsite', type: 'multi', tag: 'E', label: 'Moyens sur place', none: 'Aucun', group: 'E', groupTitle: 'Moyens sur place et demandés', options: L([
+        'Pompiers', 'SMUR', 'Police, gendarmerie', 'Hélicoptère', 'Équipe NRBC', 'Secouristes']) },
+      { key: 'need', type: 'multi', tag: 'E', label: 'Moyens demandés', none: 'Aucun', group: 'E', options: L([
+        'Pompiers', 'SMUR', 'Police, gendarmerie', 'Hélicoptère', 'Équipe NRBC', 'Secouristes']) },
+    ],
+    lines(d) {
+      const f = this.fields;
+      return [
+        { n: 'M', label: 'Événement majeur', code: one(f[0].options, d.major).code, text: one(f[0].options, d.major).label },
+        posLine('E', 'Lieu exact', d.pos),
+        { n: 'T', label: 'Type', code: '', text: one(f[2].options, d.type).label },
+        { n: 'H', label: 'Dangers', code: '', text: lbl(many(f[3].options, d.hazards), 'Aucun') },
+        { n: 'A', label: 'Accès', code: '', text: lbl(many(f[4].options, d.access), 'Non précisé') },
+        { n: 'N', label: 'Victimes', code: `UA${d.ua} UR${d.ur} I${d.imp} D${d.dcd}`,
+          text: `${d.ua} UA, ${d.ur} UR, ${d.imp} impliqué${d.imp > 1 ? 's' : ''}, ${d.dcd} décédé${d.dcd > 1 ? 's' : ''}` },
+        { n: 'E', label: 'Moyens', code: '', text: 'sur place : ' + lbl(many(f[9].options, d.onsite), 'aucun')
+          + ' · demandés : ' + lbl(many(f[10].options, d.need), 'aucun') },
+      ];
+    },
+  });
+
+  define({
+    marker: 'R', title: 'RENSEIGNEMENT', family: 'secours', textMax: 40,
+    desc: 'Je suis · Je vois · Je prévois · Je fais · Je demande',
+    fields: [
+      { key: 'pos', type: 'position', precision: 4, tag: 'JE SUIS', label: 'Je suis (position)' },
+      { key: 'nature', type: 'choice', tag: 'JE VOIS', label: 'Je vois (nature)', options: L([
+        'Feu d\'habitation', 'Feu d\'établissement', 'Feu industriel', 'Feu de véhicule', 'Feu de végétation',
+        'Accident de circulation', 'Secours à personne', 'Fuite de gaz', 'Produit dangereux, pollution',
+        'Effondrement', 'Inondation', 'Explosion', 'Sauvetage, noyade', 'Autre']) },
+      { key: 'victims', type: 'count', max: 99, tag: 'JE VOIS', label: 'Victimes', group: 'nature' },
+      { key: 'trend', type: 'choice', tag: 'JE PRÉVOIS', label: 'Je prévois', options: L([
+        'Maîtrisé', 'Stable', 'Extension possible', 'Extension certaine', 'Risque d\'explosion', 'Évacuation à prévoir']) },
+      { key: 'actions', type: 'multi', tag: 'JE FAIS', label: 'Je fais', none: 'Reconnaissance seule', options: L([
+        'Sauvetages', 'Extinction', 'Établissement de lances', 'Périmètre de sécurité', 'Évacuation',
+        'Soins aux victimes', 'Protection des biens', 'Coupure énergies']) },
+      { key: 'request', type: 'multi', tag: 'JE DEMANDE', label: 'Je demande', none: 'Rien', options: L([
+        'Engin pompe (FPT)', 'Échelle (EPA)', 'Ambulance (VSAV)', 'SMUR', 'Police, gendarmerie',
+        'Équipe NRBC', 'Hélicoptère', 'Renfort important', 'Gaz, électricité', 'Chef de groupe']) },
+    ],
+    lines(d) {
+      const f = this.fields;
+      return [
+        posLine('JE SUIS', 'Position', d.pos),
+        { n: 'JE VOIS', label: 'Nature, victimes', code: '', text: one(f[1].options, d.nature).label + ' · ' + d.victims + ' victime' + (d.victims > 1 ? 's' : '') },
+        { n: 'JE PRÉVOIS', label: 'Évolution', code: '', text: one(f[3].options, d.trend).label },
+        { n: 'JE FAIS', label: 'Actions', code: '', text: lbl(many(f[4].options, d.actions), 'Reconnaissance') },
+        { n: 'JE DEMANDE', label: 'Moyens', code: '', text: lbl(many(f[5].options, d.request), 'Rien') },
+      ];
+    },
+  });
+
+  define({
+    marker: 'S', title: 'SALUTE', family: 'contact',
+    desc: 'Observation : effectif, activité, lieu, unité, heure, équipement',
+    fields: [
+      { key: 'size', type: 'number', min: 1, max: 999, step: 1, tag: 'S', label: 'Effectif' },
+      { key: 'activity', type: 'choice', tag: 'A', label: 'Activité', groupTitle: 'Activité et direction', options: L([
+        'Statique', 'Déplacement', 'Observation', 'Creuse, fortifie', 'Patrouille', 'Attaque', 'Défense',
+        'Repli', 'Ravitaillement', 'Embuscade', 'Pose d\'engin', 'Rassemblement', 'Autre']) },
+      { key: 'heading', type: 'choice', optional: true, tag: 'A', label: 'Direction du déplacement', options: DIR8, group: 'activity' },
+      { key: 'pos', type: 'position', precision: 4, tag: 'L', label: 'Lieu' },
+      { key: 'unit', type: 'choice', tag: 'U', label: 'Unité, tenue', options: L([
+        'Militaires en uniforme', 'Paramilitaires', 'Civils armés', 'Police', 'Civils', 'Véhicules seuls',
+        'Uniforme inconnu', 'Autre']) },
+      { key: 'time', type: 'time', tag: 'T', label: 'Heure (UTC)' },
+      { key: 'equip', type: 'multi', tag: 'E', label: 'Équipement', none: 'Non vu', options: L([
+        'Armes légères', 'Mitrailleuse', 'Lance-roquettes', 'Mortier', 'Artillerie', 'Véhicule léger',
+        'Véhicule blindé', 'Char', 'Drone', 'Radio', 'Engins explosifs', 'Optiques']) },
+    ],
+    lines(d) {
+      const f = this.fields;
+      const h = one(f[2].options, d.heading);
+      return [
+        { n: 'S', label: 'Effectif', code: '', text: d.size === null ? 'inconnu' : String(d.size) },
+        { n: 'A', label: 'Activité', code: '', text: one(f[1].options, d.activity).label + (h ? ' vers ' + h.label : '') },
+        posLine('L', 'Lieu', d.pos),
+        { n: 'U', label: 'Unité, tenue', code: '', text: one(f[4].options, d.unit).label },
+        { n: 'T', label: 'Heure', code: '', text: hhmm(d.time) },
+        { n: 'E', label: 'Équipement', code: '', text: lbl(many(f[6].options, d.equip), 'Non vu') },
+      ];
+    },
+  });
+
+  define({
+    marker: 'K', title: 'CONTACT', family: 'contact', alert: true,
+    desc: 'Contact immédiat : position, azimut, distance, nature',
+    fields: [
+      { key: 'pos', type: 'position', precision: 4, tag: '1', label: 'Ma position' },
+      { key: 'bearing', type: 'number', min: 0, max: 355, step: 5, unit: '°', tag: '2', label: 'Azimut du contact', groupTitle: 'Azimut et distance' },
+      { key: 'dist', type: 'number', min: 0, max: 5000, step: 50, unit: 'm', tag: '2', label: 'Distance', group: 'bearing' },
+      { key: 'nature', type: 'choice', tag: '3', label: 'Nature', options: L([
+        'Tirs armes légères', 'Tirs indirects', 'Embuscade', 'Engin explosif', 'Mines', 'Tireur isolé',
+        'Véhicule hostile', 'Drone', 'Mouvement suspect', 'Autre']) },
+      { key: 'cas', type: 'count', max: 99, tag: '4', label: 'Blessés amis' },
+    ],
+    lines(d) {
+      const f = this.fields;
+      return [
+        posLine('1', 'Ma position', d.pos),
+        { n: '2', label: 'Azimut, distance', code: '', text: (d.bearing === null ? 'azimut ?' : d.bearing + '°') + ' · ' + (d.dist === null ? 'distance ?' : d.dist + ' m') },
+        { n: '3', label: 'Nature', code: '', text: one(f[3].options, d.nature).label },
+        { n: '4', label: 'Blessés amis', code: '', text: String(d.cas) },
+      ];
+    },
+  });
+
+  define({
+    marker: 'U', title: '9-LINE UXO/IED', family: 'contact', alert: true,
+    desc: 'Engin explosif ou non explosé',
+    fields: [
+      { key: 'dtg', type: 'dtg', tag: '1', label: 'Date-heure de découverte (UTC)' },
+      { key: 'pos', type: 'position', precision: 4, tag: '2', label: 'Position' },
+      { key: 'freq', type: 'freq', tag: '3', label: 'Contact (fréquence)' },
+      { key: 'type', type: 'choice', tag: '4', label: 'Type d\'engin', options: L([
+        { code: 'D', label: 'Largué' }, { code: 'P', label: 'Projeté' }, { code: 'L', label: 'Posé' },
+        { code: 'T', label: 'Lancé' }, { code: 'I', label: 'Engin explosif improvisé' }, { code: 'M', label: 'Mine' },
+        { code: 'U', label: 'Munition non explosée' }, { code: '?', label: 'Inconnu' }]) },
+      { key: 'nbc', type: 'multi', tag: '5', label: 'Contamination NRBC', none: 'Aucune', options: NBC },
+      { key: 'threat', type: 'multi', tag: '6', label: 'Ressources menacées', none: 'Aucune', options: L([
+        'Personnel', 'Véhicules', 'Installations', 'Itinéraire', 'Population', 'Infrastructure']) },
+      { key: 'impact', type: 'choice', tag: '7', label: 'Impact sur la mission', options: L([
+        'Aucun', 'Mineur', 'Majeur', 'Mission arrêtée']) },
+      { key: 'protect', type: 'multi', tag: '8', label: 'Mesures de protection', none: 'Aucune', options: L([
+        'Bouclage', 'Évacuation', 'Mise à l\'abri', 'Itinéraire dévié', 'Marquage']) },
+      { key: 'priority', type: 'choice', tag: '9', label: 'Priorité', options: L([
+        { code: 'I', label: 'Immédiate' }, { code: 'N', label: 'Indirecte' }, { code: 'M', label: 'Mineure' },
+        { code: 'S', label: 'Sans menace' }]) },
+    ],
+    lines(d, call) {
+      const f = this.fields;
+      const t = d.dtg;
+      return [
+        { n: '1', label: 'Date-heure', code: '', text: t ? `le ${t.d} à ${pad2(t.h)}:${pad2(t.m)}Z` : 'inconnue' },
+        posLine('2', 'Position', d.pos),
+        { n: '3', label: 'Contact', code: '', text: formatFreq(d.freq) + ' / ' + (call || '?') },
+        { n: '4', label: 'Type', code: one(f[3].options, d.type).code, text: one(f[3].options, d.type).label },
+        { n: '5', label: 'NRBC', code: cds(many(NBC, d.nbc)), text: lbl(many(NBC, d.nbc), 'Aucune') },
+        { n: '6', label: 'Menacé', code: '', text: lbl(many(f[5].options, d.threat), 'Rien') },
+        { n: '7', label: 'Impact mission', code: '', text: one(f[6].options, d.impact).label },
+        { n: '8', label: 'Protection', code: '', text: lbl(many(f[7].options, d.protect), 'Aucune') },
+        { n: '9', label: 'Priorité', code: one(f[8].options, d.priority).code, text: one(f[8].options, d.priority).label },
+      ];
+    },
+  });
+
+  define({
+    marker: 'L', title: 'LACE', family: 'unite',
+    desc: 'État de l\'unité : liquides, munitions, blessés, équipement',
+    fields: [
+      { key: 'state', type: 'grid', tag: 'LACE', label: 'État', groupTitle: 'État de l\'unité', states: COLORS,
+        items: ['L · Liquides (eau, carburant)', 'A · Munitions', 'C · Blessés', 'E · Équipement'] },
+      { key: 'cas', type: 'count', max: 99, tag: 'C', label: 'Nombre de blessés', group: 'state' },
+    ],
+    lines(d) {
+      const names = ['Liquides', 'Munitions', 'Blessés', 'Équipement'];
+      return d.state.map((x, i) => ({ n: 'LACE'[i], label: names[i], code: COLORS[x].code,
+        text: COLORS[x].label + (i === 2 ? ' · ' + d.cas + ' blessé' + (d.cas > 1 ? 's' : '') : '') }));
+    },
+  });
+
+  define({
+    marker: 'P', title: 'POSREP', family: 'unite',
+    desc: 'Position de la station (100 m), 1 bloc',
+    fields: [{ key: 'pos', type: 'position', precision: 3, tag: 'P', label: 'Position' }],
+    lines(d) { return [posLine('P', 'Position (±100 m)', d.pos)]; },
+  });
+
+  /** Familles, dans l'ordre du menu « messages formatés ». */
+  const FAMILIES = [
+    { id: 'sante', label: 'Santé' },
+    { id: 'secours', label: 'Sécurité civile' },
+    { id: 'contact', label: 'Contact et engins' },
+    { id: 'unite', label: 'Unité' },
+  ];
+
+  // ============================================================
   // MESSAGE COMPLET
   // ============================================================
 
@@ -279,9 +624,14 @@
    */
   function encode(m) {
     let s = '';
+    if (m.fmt) {
+      const f = FORMATS[m.fmt];
+      s = '/' + f.marker + packFields(f, m.data);
+    }
     if (m.nine) s += '/9' + encodeNine(m.nine);
-    const mist = (m.mist || []).slice(0, m.nine ? MAX_MIST_WITH_NINE : MAX_MIST);
-    if (mist.length) s += '/M' + DIGITS[mist.length] + mist.map(encodeMist).join('');
+    const at = (m.mist || []).some(isAtMist);
+    const mist = (m.mist || []).slice(0, at ? (m.nine ? MAX_ATMIST_WITH_NINE : MAX_ATMIST) : (m.nine ? MAX_MIST_WITH_NINE : MAX_MIST));
+    if (mist.length) s += (at ? '/A' : '/M') + DIGITS[mist.length] + mist.map(at ? encodeAtMist : encodeMist).join('');
     if (!s) throw new Error('Message vide');
     if (m.readback) s = '?' + s.slice(1);
     const remark = normalizeRemark(m.remark);
@@ -294,7 +644,15 @@
 
   /** Un message commence-t-il par un marqueur de message formaté ? (avant décodage complet) */
   function isFormatted(body) {
-    return /^[/?][9M]/.test(body || '');
+    return /^[/?][0-9A-Z]/.test(body || '') && (body[1] in FORMATS || body[1] === '9' || body[1] === 'M' || body[1] === 'A');
+  }
+
+  /** Format qui déclenche l'alerte chez le destinataire, dès l'en-tête : son titre, sinon null. */
+  function alertTitle(body) {
+    if (!/^\/[0-9A-Z]/.test(body || '')) return null;
+    if (body[1] === '9') return '9-LINE';
+    const f = FORMATS[body[1]];
+    return f && f.alert ? f.title : null;
   }
 
   /**
@@ -307,24 +665,34 @@
     let s = '/' + body.slice(1);
     let nine = null;
     const mist = [];
+    const gen = FORMATS[s[1]];
+    if (gen) {
+      const len = fieldsLen(gen);
+      if (s.length < 2 + len) return null;
+      const data = unpackFields(gen, s.slice(2, 2 + len));
+      if (!data) return null;
+      return { fmt: gen.marker, data, nine: null, mist: [], remark: s.slice(2 + len).trim(), readback, kind: gen.title };
+    }
     if (s.startsWith('/9')) {
       if (s.length < 2 + NINE_LEN) return null;
       nine = decodeNine(s.slice(2, 2 + NINE_LEN));
       if (!nine) return null;
       s = s.slice(2 + NINE_LEN);
     }
-    if (s.startsWith('/M')) {
+    if (s.startsWith('/M') || s.startsWith('/A')) {
+      const at = s[1] === 'A';
+      const len = at ? ATMIST_LEN : MIST_LEN;
       const n = DIGITS.indexOf(s[2]);
-      if (n < 1 || n > MAX_MIST || s.length < 3 + n * MIST_LEN) return null;
+      if (n < 1 || n > (at ? MAX_ATMIST : MAX_MIST) || s.length < 3 + n * len) return null;
       for (let i = 0; i < n; i++) {
-        const p = decodeMist(s.substr(3 + i * MIST_LEN, MIST_LEN));
+        const p = (at ? decodeAtMist : decodeMist)(s.substr(3 + i * len, len));
         if (!p) return null;
         mist.push(p);
       }
-      s = s.slice(3 + n * MIST_LEN);
+      s = s.slice(3 + n * len);
     }
     if (!nine && !mist.length) return null;
-    return { nine, mist, remark: s.trim(), readback, kind: nine ? '9-LINE' : 'MIST' };
+    return { nine, mist, remark: s.trim(), readback, kind: nine ? '9-LINE MEDEVAC' : (mist.some(isAtMist) ? 'AT-MIST' : 'MIST') };
   }
 
   // ============================================================
@@ -461,6 +829,11 @@
    * @param {string} call indicatif de l'émetteur (ligne 2)
    */
   function lines(msg, call) {
+    if (msg.fmt) {
+      const out = FORMATS[msg.fmt].lines(msg.data, call);
+      if (msg.remark) out.push({ label: 'Remarque', text: msg.remark });
+      return out;
+    }
     const out = [];
     const d = msg.nine;
     if (d) {
@@ -503,7 +876,11 @@
         p.pulse !== null ? 'pouls ' + p.pulse : null,
         p.resp !== null ? 'resp. ' + p.resp : null,
         p.spo2 !== null ? 'SpO2 ' + p.spo2 + ' %' : null,
+        p.hemo !== null && p.hemo !== undefined ? HEMO[p.hemo].label.toLowerCase() : null,
       ].filter(Boolean);
+      const at = [p.age !== null && p.age !== undefined ? p.age + ' ans' : null, p.sex !== null && p.sex !== undefined ? SEX[p.sex].label : null]
+        .filter(Boolean).join(', ');
+      if (at) out.push({ mist: true, head, label: 'AT', text: at });
       out.push({ mist: true, head, label: 'M', text: MECHANISM[p.mech] });
       out.push({ mist: true, label: 'I', text: p.regions.length ? p.regions.map((i) => REGIONS[i]).join(', ') : 'non précisé' });
       out.push({ mist: true, label: 'S', text: signs.length ? signs.join(' · ') : 'non relevés' });
@@ -515,7 +892,7 @@
 
   /** Texte en clair complet, pour partager, imprimer ou le QR code. */
   function toText(msg, call, when) {
-    const title = (msg.readback ? 'COLLATIONNEMENT ' : '') + (msg.nine ? '9-LINE MEDEVAC' : 'MIST')
+    const title = (msg.readback ? 'COLLATIONNEMENT ' : '') + msg.kind
       + (call ? ' de ' + call : '') + (when ? ' · ' + when : '');
     const out = [title];
     let lastHead = null;
@@ -524,7 +901,7 @@
         out.push('', l.head);
         lastHead = l.head;
       }
-      if (l.n) out.push(`${l.n}. ${l.label} : ${l.code ? l.code + ' — ' : ''}${l.text}`);
+      if (l.n) out.push(`${l.n}${/^\d+$/.test(l.n) ? '.' : ' ·'} ${l.label} : ${l.code ? l.code + ' — ' : ''}${l.text}`);
       else if (l.mist) out.push(`${l.label} : ${l.text}`);
       else out.push('', `${l.label} : ${l.text}`);
     }
@@ -548,7 +925,8 @@
   }
 
   const Medevac = {
-    DIGITS, NINE_LEN, MIST_LEN, MAX_COUNT, MAX_TOTAL, MAX_MIST, MAX_MIST_WITH_NINE, roundFreq,
+    DIGITS, NINE_LEN, MIST_LEN, ATMIST_LEN, MAX_COUNT, MAX_TOTAL, MAX_MIST, MAX_MIST_WITH_NINE,
+    MAX_ATMIST, MAX_ATMIST_WITH_NINE, roundFreq, FORMATS, FAMILIES, fieldsLen, alertTitle, isAtMist, SEX, HEMO, COLORS,
     PRECEDENCE, EQUIPMENT, SECURITY, WOUNDS, MARKING, NATIONALITY, NBC, TERRAIN,
     MECHANISM, REGIONS, AVPU, TREATMENT,
     encode, decode, isFormatted, encodeNine, decodeNine, encodeMist, decodeMist,

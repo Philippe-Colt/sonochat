@@ -807,7 +807,20 @@ header h1 .h1-sub {
 .dest-badge { color: var(--text-primary); border-color: var(--text-secondary); }
 .dest-badge.broadcast { color: var(--text-secondary); border-style: dashed; background: transparent; }
 
-#tx-bar .medevac-btn { margin-left: auto; }
+#tx-bar .msg-btn { margin-left: auto; }
+
+.msg-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
 
 /* En-tete des bulles : FM PC TO XY, et la precision (en l'air, autre station) */
 .message .msg-call .fmto { font-size: 0.65rem; margin: 0 1px; }
@@ -1239,4 +1252,37 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .no-flex-gap .mv-card > * + *,
 .no-flex-gap .mv-lines > * + *,
 .no-flex-gap .mv-remark > * + * { margin-top: 8px; }
-.no-flex-gap #tx-bar > .medevac-btn { margin-left: auto; }
+.no-flex-gap #tx-bar > .msg-btn { margin-left: auto; }
+
+/* Menu des messages formates (par type) et formats generiques */
+.mv-family {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.mv-gridrow { display: flex; flex-direction: column; gap: 6px; }
+.mv-gridrow > span { font-weight: 600; }
+.mv-states { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mv-state {
+  min-height: 56px;
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+.mv-state.on.st-0 { background: #2e7d32; border-color: #66bb6a; }
+.mv-state.on.st-1 { background: #ef6c00; border-color: #ffa726; }
+.mv-state.on.st-2 { background: #c62828; border-color: #ef5350; }
+.mv-state.on.st-3 { background: #000; border-color: #fff; color: #fff; }
+
+/* Etiquettes longues (JE SUIS, JE DEMANDE...) */
+.mv-n { min-width: 1.6em; width: auto; white-space: nowrap; }
+.no-flex-gap .mv-gridrow > * + * { margin-top: 6px; }
+
+.mv-family + .mv-grid .mv-big b { font-size: 1.2rem; }

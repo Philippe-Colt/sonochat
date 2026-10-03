@@ -115,5 +115,72 @@ console.log('Message complet');
   check('collationnement : conforme', M.diff(d, M.decode(body)).length === 0);
 }
 
+console.log('AT-MIST');
+{
+  const at = { ...mist, age: 34, sex: 1, hemo: 2 };
+  const body = M.encode({ mist: [at] });
+  check('AT-MIST : marqueur /A, 13 car. par blessé', body.startsWith('/A1') && body.length === 3 + 13, body);
+  const d = M.decode(body).mist[0];
+  check('âge, sexe, hémorragie restitués', d.age === 34 && d.sex === 1 && d.hemo === 2 && d.pulse === 120 && d.mech === 1, d);
+  check('sans âge/sexe/hémorragie : MIST, plus court', M.encode({ mist: [mist] }).startsWith('/M1'));
+  const txt = M.toText(M.decode(body), 'PC');
+  check('texte : titre AT-MIST, âge et sexe', /^AT-MIST/.test(txt) && /AT : 34 ans, Femme/.test(txt) && /hémorragie active/.test(txt), txt);
+  check('9-line + 7 AT-MIST tiennent', 4 + M.encode({ nine, mist: Array(7).fill(at) }).length <= 128);
+}
+
+console.log('Formats déclarés');
+{
+  const r = (n) => Math.floor(Math.random() * n);
+  const sample = (f) => {
+    switch (f.type) {
+      case 'choice': return f.optional && r(3) === 0 ? null : r(f.options.length);
+      case 'multi': return f.options.map((_, i) => i).filter(() => r(2));
+      case 'count': return r(f.max + 1);
+      case 'number': return r(4) === 0 ? null : f.min + r(Math.round((f.max - f.min) / f.step) + 1) * f.step;
+      case 'position': return { lat: -80 + Math.random() * 160, lon: -180 + Math.random() * 359 };
+      case 'time': return r(4) === 0 ? null : { h: r(24), m: r(12) * 5 };
+      case 'dtg': return r(4) === 0 ? null : { d: 1 + r(31), h: r(24), m: r(12) * 5 };
+      case 'freq': return [0, 14074, 145500, 433500][r(4)];
+      case 'grid': return f.items.map(() => r(f.states.length));
+      default: throw new Error(f.type);
+    }
+  };
+  const same = (f, a, b) => {
+    if (f.type === 'position') {
+      const k = 10 ** -f.precision;
+      return Math.abs(a.lat - b.lat) <= k && Math.abs(((a.lon - b.lon + 540) % 360) - 180) <= k;
+    }
+    return JSON.stringify(a) === JSON.stringify(b);
+  };
+  for (const [marker, fmt] of Object.entries(M.FORMATS)) {
+    let bad = 0, maxLen = 0;
+    for (let i = 0; i < 300; i++) {
+      const data = Object.fromEntries(fmt.fields.map((f) => [f.key, sample(f)]));
+      const body = M.encode({ fmt: marker, data });
+      maxLen = Math.max(maxLen, body.length);
+      const d = M.decode(body);
+      if (!d || d.fmt !== marker || !onAirOk(body) || body.slice(2).includes(' ')
+        || fmt.fields.some((f) => !same(f, data[f.key], d.data[f.key]))) { bad++; if (bad === 1) console.log('   ', marker, JSON.stringify(data), d && JSON.stringify(d.data)); }
+      M.toText(d, 'PC', '12:00');
+    }
+    const blocks = Math.ceil((4 + maxLen) / 13);
+    check(`${fmt.title} (/${marker}) : 300 aller-retour exacts, ${4 + maxLen} car. = ${blocks} bloc(s)`, bad === 0 && blocks <= 2, bad + ' erreur(s)');
+  }
+  check('POSREP et LACE : 1 bloc', 4 + 2 + M.fieldsLen(M.FORMATS.P) <= 13 && 4 + 2 + M.fieldsLen(M.FORMATS.L) <= 13);
+  const pos = M.decode(M.encode({ fmt: 'P', data: { pos: { lat: 48.85837, lon: 2.29448 } } })).data.pos;
+  check('POSREP : position à 100 m près', Math.abs(pos.lat - 48.858) < 1e-6 && Math.abs(pos.lon - 2.294) < 1e-6, pos);
+  const rs = M.encode({ fmt: 'R', data: { pos: { lat: 45, lon: 5 }, nature: 0, victims: 2, trend: 2, actions: [0, 1], request: [0, 2] }, remark: 'immeuble r+4' });
+  const rd = M.decode(rs);
+  check('renseignement + texte court', rd.remark === 'IMMEUBLE R+4' && /JE DEMANDE · Moyens : Engin pompe \(FPT\), Ambulance \(VSAV\)/.test(M.toText(rd, 'PC')), M.toText(rd, 'PC'));
+  check('alerte : 9-line, METHANE, CONTACT, UXO ; pas SALUTE ni MIST ni collationnement',
+    M.alertTitle('/9X') === '9-LINE' && M.alertTitle('/EX') === 'METHANE' && M.alertTitle('/KX') === 'CONTACT'
+    && M.alertTitle('/UX') === '9-LINE UXO/IED' && !M.alertTitle('/SX') && !M.alertTitle('/MX') && !M.alertTitle('?9X'));
+  check('isFormatted : marqueurs connus seulement', M.isFormatted('/E1') && M.isFormatted('?L1') && !M.isFormatted('/ZZZ') && !M.isFormatted('/7AB'));
+  const m1 = M.decode(M.encode({ fmt: 'E', data: { major: 0, pos: { lat: 45, lon: 5 }, type: 4, hazards: [0], access: [1], ua: 2, ur: 5, imp: 10, dcd: 0, onsite: [0], need: [1, 3] } }));
+  const m2 = M.decode(M.encode({ fmt: 'E', data: { ...m1.data, ua: 3 } }));
+  check('METHANE : collationnement, ligne N différente', JSON.stringify(M.diff(m1, m2)) === JSON.stringify(['N']), M.diff(m1, m2));
+  check('METHANE : texte en clair', /^METHANE/.test(M.toText(m1, 'PC')) && /N · Victimes : UA2 UR5 I10 D0/.test(M.toText(m1, 'PC')), M.toText(m1, 'PC'));
+}
+
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');
 process.exit(failures ? 1 : 0);

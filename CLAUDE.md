@@ -101,10 +101,32 @@ RPT       : type=2 (2) | msgId (5) | seq (4)
 - Répétition reçue (accusé perdu) : reconnue (msgId/seq, ou même texte < 180 s), pas de
   doublon affiché, réaccusée. Un étendu reçu avec des trous est complété par sa répétition.
 
-## Messages formatés : 9-line MEDEVAC et MIST (`medevac.js`, `medevac-ui.js`)
+## Messages formatés (`medevac.js`, `medevac-ui.js`)
 
-Bouton **MEDEVAC** (barre au-dessus de la saisie) → 9-line ou MIST seul, un écran par ligne,
-gros boutons, passage automatique après un choix unique, récapitulatif décodé avant envoi.
+Barre : **MSG** → tous les formats, rangés par type (santé, sécurité civile, contact et engins,
+unité), destinataire en tête ; **MEDEVAC** → 9-line directement. Un écran par champ ou groupe,
+gros boutons, passage automatique après un choix unique, récapitulatif décodé avant envoi,
+taille sur l'air affichée en direct. **Règle : toujours le plus court possible sur l'air.**
+
+| Marqueur | Format | Car. (+ en-tête 4) | Blocs | Alerte |
+|---|---|---|---|---|
+| `/9` | 9-line MEDEVAC (code dédié, version 1) | 22 | 2 | oui |
+| `/M` · `/A` | MIST (11/blessé) · AT-MIST (13/blessé, si âge/sexe/hémorragie renseigné) | 3 + n×11 · n×13 | — | — |
+| `/E` | METHANE | 22 | 2 | oui |
+| `/R` | Renseignement « Je suis/vois/prévois/fais/demande » + texte ≤ 40 | 16 + texte | 2-3 | — |
+| `/S` | SALUTE | 18 | 2 | — |
+| `/K` | CONTACT | 15 | 2 | oui |
+| `/U` | 9-line UXO/IED | 20 | 2 | oui |
+| `/L` | LACE | 5 | 1 | — |
+| `/P` | POSREP (100 m) | 9 | 1 | — |
+
+- Formats génériques déclarés par leurs champs (`define`, `FORMATS`) : types `choice` (optional),
+  `multi`, `count`, `number` (min/max/step, 0 = inconnu), `position` (précision 4 ou 3),
+  `time`, `dtg`, `freq`, `grid` (états par ligne). `group` regroupe des champs sur un écran
+  (`groupTitle`). Écrans générés (`genericSteps`), texte en clair par `lines()` du format.
+  **Pas de champ version** : un format qui change prend une nouvelle lettre. Listes et ordre
+  des champs = format sur l'air, à ne jamais réordonner.
+- Alerte (`alertTitle`) dès l'en-tête pour 9-line, METHANE, CONTACT, UXO, destinataire seulement.
 
 Format sur l'air (après l'en-tête de 4 car.) — **à ne jamais réordonner**, seulement étendre :
 ```
@@ -200,7 +222,7 @@ node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
 # 3 stations ChatMTX complètes (Chromium headless), air simulé avec pertes, temps ×10 — ~6 min
 # 23 scénarios : adressage, en l'air, répétitions, RPT, 9-line/MIST, collationnement, alerte
 # Prérequis hors dépôt : npm i -g playwright-core && npx playwright install chromium
-node tests/stations.js
+node tests/stations.js        # ONLY=12,24 : seulement ces scénarios
 ```
 
 

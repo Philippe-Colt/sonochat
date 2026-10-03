@@ -196,8 +196,7 @@ async function sendText(from, to, text, mode = 'extended') {
 async function send9(from, to, { mist = 0, remark = '' } = {}) {
   const page = pages[from];
   await setDest(page, to);
-  await page.click('#btn-medevac');
-  await page.click('[data-act="nine"]');
+  await page.click('#btn-medevac');                          // 9-line direct
   await page.click('[data-act="next"]');                     // guerre
   await page.click('[data-act="next"]');                     // 1 position station
   await page.click('[data-act="next"]');                     // 2 fréquence
@@ -216,6 +215,7 @@ async function send9(from, to, { mist = 0, remark = '' } = {}) {
   for (let p = 0; p < mist; p++) {
     await page.click('[data-act="addmist"]');
     await page.click('[data-act="next"]');                   // n°/urgence
+    await page.click('[data-act="next"]');                   // AT : « ? »
     await page.click('[data-i="1"]');                        // explosion
     await page.click('[data-act="next"]');
     await page.click('[data-i="2"]');                        // thorax
@@ -230,13 +230,43 @@ async function send9(from, to, { mist = 0, remark = '' } = {}) {
   await page.click('[data-act="next"]');                     // Envoyer
 }
 
+/** Remplit un format générique par l'interface (premier choix proposé à chaque écran) et l'envoie. */
+async function sendFormat(from, to, marker, { text = '' } = {}) {
+  const page = pages[from];
+  await setDest(page, to);
+  await page.click('#btn-msg');
+  await page.click(`[data-act="${marker}"]`);
+  for (let i = 0; i < 25; i++) {
+    const send = await page.$('.mv-navbtn.mv-send');
+    if (send) {
+      if (text) await page.fill('#mv-remark', text);
+      await send.click();
+      return;
+    }
+    const next = await page.$('[data-act="next"]');
+    if (next && await next.isDisabled()) {
+      const station = await page.$('[data-pos="station"]');
+      const pick = station || await page.$('.mv-body button.mv-big:not(.on):not([data-none]):not([data-pos])');
+      await pick.click();
+      await sleep(450); // passage automatique éventuel
+      continue;
+    }
+    // Un compteur bougé quand il y en a (effectifs, victimes) : message moins trivial
+    const plus = await page.$('.mv-body [data-counter] [data-d]:not([data-d^="-"]):not([data-d="?"])');
+    if (plus) await plus.click();
+    await page.click('[data-act="next"]');
+  }
+  throw new Error('saisie ' + marker + ' inachevée');
+}
+
 async function sendMistOnly(from, to) {
   const page = pages[from];
   await setDest(page, to);
-  await page.click('#btn-medevac');
+  await page.click('#btn-msg');
   await page.click('[data-act="mist"]');
-  await page.click('[data-act="next"]');
-  await page.click('[data-i="0"]');
+  await page.click('[data-act="next"]');                     // n°/urgence
+  await page.click('[data-act="next"]');                     // AT : laissé « ? » → MIST court
+  await page.click('[data-i="0"]');                          // mécanisme
   await page.click('[data-act="next"]');
   await page.click('[data-act="next"]');
   await page.click('[data-i="0"]'); await sleep(400);
@@ -293,7 +323,9 @@ const txBy = (n, pred = () => true) => txLog.filter((x) => x.from === n && pred(
 const acks = (n) => txBy(n, (x) => x.kind === 'tele' && x.type === 'ack');
 const lastOf = (s, type) => s.bubbles.filter((b) => b.type === type).slice(-1)[0] || {};
 
+const ONLY = (process.env.ONLY || '').split(',').filter(Boolean);
 async function scenario(title, fn) {
+  if (ONLY.length && !ONLY.includes(title.split('.')[0])) return;
   console.log('\n■ ' + title);
   try { await fn(); } catch (e) { fails++; total++; console.log('    FAIL exception : ' + e.message.split('\n')[0]); }
 }
@@ -554,7 +586,7 @@ async function scenario(title, fn) {
     await page.fill('#setting-callsign', 'PC');
     await page.click('#btn-close-settings');
     await setDest(page, '99');
-    await page.click('#btn-medevac');
+    await page.click('#btn-msg');
     const to = await page.textContent('.mv-body [data-act="to"]');
     check('composeur : « TO ? » (99 interdit)', /TO \?/.test(to), to);
     await page.click('[data-act="nine"]');
@@ -598,6 +630,66 @@ async function scenario(title, fn) {
     check('PC confirmé par XY', /recu par F4XYZ/.test(lastOf(pc, 'TX').status), lastOf(pc, 'TX'));
     check('ZZ : réception terminée « incomplet », pas bloquée', /incomplet/.test(lastOf(zz, 'RX').status) && !lastOf(zz, 'RX').receiving, lastOf(zz, 'RX'));
     check('ZZ n\'émet rien', txBy('ZZ') === 0, txLog);
+  });
+
+  const FMT = { E: ['METHANE', true, 2], R: ['RENSEIGNEMENT', false, 2], S: ['SALUTE', false, 2], K: ['CONTACT', true, 2],
+    U: ['9-LINE UXO/IED', true, 2], L: ['LACE', false, 1], P: ['POSREP', false, 1] };
+  for (const [marker, [title, alert, blocks]] of Object.entries(FMT)) {
+    await scenario(`${23 + Object.keys(FMT).indexOf(marker) + 1}. ${title} PC → XY par le menu MSG`, async () => {
+      await freshAll();
+      await sendFormat('PC', 'XY', marker);
+      await waitQuiet(120);
+      const pc = await state('PC'), xy = await state('XY'), zz = await state('ZZ');
+      const sent = pc.bubbles.find((b) => b.type === 'TX');
+      const got = xy.bubbles.find((b) => b.type === 'RX');
+      const tx = txLog.find((x) => x.from === 'PC');
+      const nb = tx.kind === 'ext' ? tx.text.split('|').length : 1;
+      check(`envoyé en ${blocks} bloc${blocks > 1 ? 's' : ''}`, nb === blocks, tx);
+      check('confirmé par XY et collationné conforme', /recu par F4XYZ/.test(sent.status) && /Collationné conforme/.test(sent.rb), sent);
+      check(`XY : carte ${title}`, got && got.text.startsWith('[' + title + ']'), got && got.text);
+      check(alert ? 'XY en alerte « ALERTE ' + title + ' »' : 'pas d\'alerte', alert
+        ? xy.alert && (await pages.XY.textContent('#medevac-alert-title')) === 'ALERTE ' + title : !xy.alert, xy.alert);
+      check('ZZ : carte affichée, aucune réponse', txBy('ZZ') === 0 && zz.bubbles.some((b) => b.text.startsWith('[' + title + ']')), zz.bubbles.map((b) => b.text.slice(0, 30)));
+    });
+  }
+
+  await scenario('31. Renseignement avec texte : 3 blocs au plus', async () => {
+    await freshAll();
+    await sendFormat('PC', 'XY', 'R', { text: 'IMMEUBLE R+4 FUMEES' });
+    await waitQuiet(120);
+    const pc = await state('PC');
+    const tx = txLog.find((x) => x.from === 'PC');
+    check('confirmé, texte transmis', /recu par F4XYZ/.test(lastOf(pc, 'TX').status) && /IMMEUBLE R\+4 FUMEES/.test(tx.text.replace(/\|/g, '')), tx);
+    check('3 blocs', tx.text.split('|').length === 3, tx.text);
+  });
+
+  await scenario('32. AT-MIST (âge, sexe, hémorragie)', async () => {
+    await freshAll();
+    const page = pages.PC;
+    await setDest(page, 'XY');
+    await page.click('#btn-msg');
+    await page.click('[data-act="mist"]');
+    await page.click('[data-act="next"]');
+    await page.click('[data-counter="age"] [data-d="5"]');
+    await page.click('[data-sx="1"]'); await page.click('[data-hm="2"]');
+    await page.click('[data-act="next"]');
+    await page.click('[data-i="0"]'); await page.click('[data-act="next"]');
+    await page.click('[data-act="next"]');
+    await page.click('[data-i="0"]'); await sleep(400);
+    await page.click('[data-act="next"]'); await page.click('[data-act="next"]');
+    await page.click('[data-act="next"]');
+    await waitQuiet(120);
+    const xy = await state('XY');
+    const tx = txLog.find((x) => x.from === 'PC');
+    check('marqueur /A', /\/A1/.test(tx.text), tx.text);
+    check('XY : carte AT-MIST avec âge et sexe', /^\[AT-MIST\]/.test(xy.bubbles[0].text) && /30 ans, Femme/.test(xy.bubbles[0].text), xy.bubbles[0].text);
+  });
+
+  await scenario('33. MEDEVAC ouvre directement le 9-line', async () => {
+    await freshAll();
+    await setDest(pages.PC, 'XY');
+    await pages.PC.click('#btn-medevac');
+    check('premier écran : guerre / paix', /guerre ou de paix/.test(await pages.PC.textContent('.mv-head h2')));
   });
 
   console.log(`\n${total - fails}/${total} vérifications réussies` + (fails ? `, ${fails} échec(s)` : ''));

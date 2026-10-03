@@ -500,6 +500,14 @@
       if (link.busy) return;
       MedevacUI.openNine(); // 9-line direct
     });
+    TacMap.init({
+      history: () => history,
+      myCall: myCallsign,
+      callLabel: (c) => (c && c !== '?' ? displayCall(c) : '?'),
+      station: () => ({ pos: loadSettings().stationPos }),
+      openViewer: (body, info) => MedevacUI.openViewer(body, info),
+    });
+    document.getElementById('btn-map').addEventListener('click', () => TacMap.open());
     document.getElementById('btn-msg').addEventListener('click', () => {
       if (link.busy) return;
       MedevacUI.openChooser(); // tous les messages formates, par type
@@ -1193,6 +1201,7 @@
       history = history.slice(-200);
     }
     localStorage.setItem('sonochat-history', JSON.stringify(history));
+    TacMap.refresh(); // carte tactique ouverte : nouveaux symboles
   }
 
   // === Utils ===

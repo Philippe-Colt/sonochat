@@ -1286,3 +1286,84 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .no-flex-gap .mv-gridrow > * + * { margin-top: 6px; }
 
 .mv-family + .mv-grid .mv-big b { font-size: 1.2rem; }
+
+/* ============================================================
+   Carte tactique (tacmap.js) — pas de « inset » (vieux Chrome)
+   ============================================================ */
+.tm-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tm-overlay.hidden { display: none; }
+.tm-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.tm-bar b { flex: 1; min-width: 0; font-size: 1rem; }
+.tm-bar button {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.tm-bar button.on { border-color: var(--accent); color: var(--accent); }
+.tm-bar .tm-x { font-size: 1.4rem; min-width: 40px; }
+.tm-map { flex: 1; min-height: 0; background: #aad3df; }
+.tm-sym { background: none; border: 0; }
+.tm-grid-lbl { font: 700 11px sans-serif; color: #0d47a1; text-shadow: 0 0 2px #fff, 0 0 2px #fff; white-space: nowrap; }
+.tm-grid-lbl.e { margin-top: 4px; margin-left: 2px; }
+.tm-grid-lbl.n { margin-left: 4px; margin-top: -14px; }
+.tm-open { margin-top: 6px; padding: 6px 12px; border-radius: 6px; border: 1px solid #555; background: #eee; font-weight: 700; cursor: pointer; }
+.tm-panel {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 1000;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.tm-panel.hidden { display: none; }
+.tm-panel p + p { margin-top: 6px; }
+.tm-muted, .tm-status { color: var(--text-secondary); }
+.tm-progress { height: 8px; margin-top: 8px; border-radius: 4px; background: var(--bg-tertiary); overflow: hidden; }
+.tm-progress.hidden { display: none; }
+.tm-progress div { height: 100%; width: 0; background: var(--accent); }
+.tm-actions { display: flex; gap: 8px; margin-top: 10px; }
+.tm-actions button {
+  flex: 1;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+.tm-actions [data-act="go"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.no-flex-gap .tm-bar > * + *, .no-flex-gap .tm-actions > * + * { margin-left: 8px; }
+/* Libellés des symboles lisibles sur le fond IGN : liseré blanc */
+.tm-sym svg text { paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }

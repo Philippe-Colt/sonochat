@@ -9,6 +9,7 @@
     <link rel="icon" type="image/svg+xml" href="icon.svg">
     <link rel="apple-touch-icon" href="icon-192.png">
     <title>ChatMTX</title>
+    <link rel="stylesheet" href="leaflet.css">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -22,6 +23,9 @@
                 <h1>ChatMTX <span class="h1-sub">Messagerie Texte Xtrême</span></h1>
             </div>
             <div class="header-right">
+                <button id="btn-map" class="icon-btn" title="Carte tactique">
+                    <svg viewBox="0 0 24 24" width="22" height="22"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                </button>
                 <button id="btn-settings" class="icon-btn" title="Parametres">
                     <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7zm7.43-2.53a7.76 7.76 0 0 0 0-1.94l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.3 7.3 0 0 0-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65a7.3 7.3 0 0 0-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.76 7.76 0 0 0 0 1.94l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .61.22l2.49-1c.52.4 1.08.72 1.69.98l.38 2.65c.05.24.26.42.49.42h4c.24 0 .44-.18.49-.42l.38-2.65a7.3 7.3 0 0 0 1.69-.98l2.49 1a.5.5 0 0 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
                 </button>
@@ -202,6 +206,10 @@
     <script src="medevac.js"></script>
     <script src="qrcode.js"></script>
     <script src="medevac-ui.js"></script>
+    <script src="leaflet.js"></script>
+    <script src="milsymbol.js"></script>
+    <script src="tiles.js"></script>
+    <script src="tacmap.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

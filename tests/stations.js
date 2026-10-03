@@ -252,8 +252,9 @@ async function sendFormat(from, to, marker, { text = '' } = {}) {
       continue;
     }
     // Un compteur bougé quand il y en a (effectifs, victimes) : message moins trivial
-    const plus = await page.$('.mv-body [data-counter] [data-d]:not([data-d^="-"]):not([data-d="?"])');
-    if (plus) await plus.click();
+    const PLUS = '.mv-body [data-counter] [data-d]:not([data-d^="-"]):not([data-d="?"])';
+    const nPlus = (await page.$$(PLUS)).length; // chaque clic redessine l'écran : on relocalise
+    for (let k = 0; k < nPlus; k++) await page.locator(PLUS).nth(k).click();
     await page.click('[data-act="next"]');
   }
   throw new Error('saisie ' + marker + ' inachevée');
@@ -683,6 +684,36 @@ async function scenario(title, fn) {
     const tx = txLog.find((x) => x.from === 'PC');
     check('marqueur /A', /\/A1/.test(tx.text), tx.text);
     check('XY : carte AT-MIST avec âge et sexe', /^\[AT-MIST\]/.test(xy.bubbles[0].text) && /30 ans, Femme/.test(xy.bubbles[0].text), xy.bubbles[0].text);
+  });
+
+  await scenario('34. Carte tactique de XY après POSREP ×2, SALUTE, CONTACT', async () => {
+    await freshAll();
+    await sendFormat('PC', 'XY', 'P');
+    await waitQuiet(60);
+    await sleep(2000);
+    // 2e POSREP ailleurs (saisie MGRS), puis SALUTE et CONTACT
+    await setDest(pages.PC, 'XY');
+    await pages.PC.click('#btn-msg'); await pages.PC.click('[data-act="P"]');
+    await pages.PC.click('[data-pos="edit"]'); await pages.PC.fill('#mv-pos-input', '31U DQ 5000 1500');
+    await pages.PC.click('.mv-edit button'); await pages.PC.click('[data-act="next"]');
+    await pages.PC.click('.mv-navbtn.mv-send');
+    await waitQuiet(60);
+    await sendFormat('PC', 'XY', 'S');
+    await waitQuiet(60);
+    await sendFormat('PC', 'XY', 'K');
+    await waitQuiet(60);
+    const page = pages.XY;
+    await page.evaluate(() => Object.defineProperty(navigator, 'onLine', { get: () => false })); // pas de tuiles réseau
+    await page.click('#btn-map');
+    await sleep(1500);
+    const n = await page.evaluate(() => ({
+      syms: [...document.querySelectorAll('.tm-sym')].length,
+      track: [...document.querySelectorAll('.leaflet-overlay-pane path')].filter((p) => p.getAttribute('stroke') === '#1f6fd1').length,
+      contactLine: [...document.querySelectorAll('.leaflet-overlay-pane path')].filter((p) => p.getAttribute('stroke') === '#c62828').length,
+    }));
+    check('symboles : unité PC, SALUTE, CONTACT (+ moi éventuel)', n.syms >= 3, n);
+    check('trajet des 2 POSREP de PC', n.track === 1, n);
+    check('trait observateur → contact', n.contactLine === 1, n);
   });
 
   await scenario('33. MEDEVAC ouvre directement le 9-line', async () => {

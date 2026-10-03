@@ -162,6 +162,24 @@ puis remarque libre facultative (≤ 128 car. au total)
   (`body.mv-printing` + `@media print` ; dans l'appli : passe par Partager).
 - Appli Android : permissions de localisation dans `AndroidManifest.xml`.
 
+## Carte tactique (`tacmap.js`, `tiles.js`)
+
+Bouton carte (en-tête). Symboles **APP-6** (`milsymbol.js` 3.0.4, MIT) posés depuis
+l'**historique** (rien de stocké en plus) : 9-line → ambulance (`EFOPAE`), METHANE et
+renseignement → incident selon le type (`METHANE_SIDC`, `NATURE_SIDC`), SALUTE → hostile,
+CONTACT → hostile/tireur/IED **projeté** (position + azimut + distance, trait depuis
+l'observateur), UXO → UXO/IED/mine, POSREP → unité amie à sa dernière position (+ **trajet**),
+LACE → état sur l'unité, moi → GPS. Codes SIDC choisis sur planche et validés (`isValid`,
+tests). **Vieillissement** : 100 % < 1 h, 60 % < 6 h, 30 % au-delà. **Carroyage MGRS** 100 km /
+10 km / 1 km selon le zoom (`gridLines`, `toUtm`/`fromUtm` de `medevac.js`).
+
+Fond : **Plan IGN** (Géoplateforme WMTS PM, CORS ouvert, licence Etalab, « © IGN ») dans
+**IndexedDB** (`chatmtx-tiles`, clé `z/x/y`), PNG recompressées en **WebP** (~20 Ko/tuile).
+« Hors ligne » sur la carte : rayon 20 km, zooms 8-15 (~3 500 tuiles, ~77 Mo estimés à 48° N), 4 requêtes
+parallèles, 3 essais par tuile (l'IGN refuse parfois les rafales en HTTP 400), reprise.
+Sans tuile : fond monde `world.json` (Natural Earth 1:110m, 87 Ko) dans un calque **sous** les
+tuiles (pane `world`, z-index 150). Leaflet 1.9.4 vendorisé (`leaflet.js`, `leaflet.css`).
+
 ## Démodulation (RX)
 
 Passe de décodage toutes les 2 s sur tout le ring buffer (~130 s) :
@@ -212,6 +230,9 @@ node tests/directory.js
 
 # Messages formatés 9-line / MIST : codage, MGRS (référence publiée), texte en clair
 node tests/medevac.js
+
+# Carte tactique : SIDC valides, message → symbole, projection CONTACT, carroyage, tuiles
+node tests/tacmap.js
 
 # Séquencement PTT (avance/maintien, annulation) et adaptateur natif
 node tests/ptt-timing.js

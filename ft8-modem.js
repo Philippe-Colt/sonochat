@@ -69,15 +69,16 @@ const FT8 = {
   RX_BAND_MAX: 3000,
   RX_MIN_FREQ_GAP: 30,           // Hz : en dessous, même signal (une trame fait 50 Hz)
   RX_SEARCH_WINDOW: 40,          // s : départs de trame cherchés (une trame se décode dès qu'elle est finie)
-  // Score de synchro minimal d'un candidat large bande (mesuré à 12 kHz : maximum du
-  // bruit 13-17 sur ~900 demi-raies × 500 lignes, signal décodable à -18 dB 27-35)
-  RX_COARSE_MIN_SCORE: 15,
-  RX_DITHER_MIN_SCORE: 20,
+  // Seuils d'admission sur les scores de synchro NORMALISÉS (brut − médiane de la fréquence, `_columnMedians`) : fond à 0.
+  // Mesure (bruit blanc et ambiant) : fond brut ≈ -10,4 ; maximum du bruit seul ≈ 23-26 sur la
+  // bande, 18-21 à ±15 Hz d'un canal ; signal à -20 dB : 23-37. Seuils = anciens + 10,4.
+  RX_COARSE_MIN_SCORE: 25,
+  RX_DITHER_MIN_SCORE: 20,       // synchro fine (non normalisée) au-dessus : essais voisins si le LDPC échoue
   RX_OSD_PAIRS: 50,              // OSD après échec de la BP : ordre 1 + paires parmi les 50 moins fiables de la base (-1 : sans OSD)
-  // Canaux connus (annuaire, 12 au plus) : seuil d'admission bas autour d'eux (bruit max
-  // sur ±15 Hz × 2 s de départs : ~11), pour aller chercher les signaux les plus faibles
+  // Canaux connus (annuaire, 12 au plus) : seuil d'admission bas autour d'eux (maximum du
+  // bruit normalisé à ±15 Hz : 18-21), pour aller chercher les signaux les plus faibles
   RX_CHANNEL_HZ: 15,
-  RX_CHANNEL_MIN_SCORE: 9,       // synchro fine au-dessus : essais voisins si le LDPC échoue (bruit : ~13-17)
+  RX_CHANNEL_MIN_SCORE: 19,
   // Trame en cours de réception (pas encore décodable) : synchro partielle sur 1 ou 2
   // blocs Costas (maximum du bruit mesuré 11 et 12), puis tons de données présents
   RX_BUSY_SCORE_1: 12,
@@ -1475,12 +1476,20 @@ class FT8Modem {
         if (Math.abs((kLo + b / 2) * binWidth - f) <= FT8.RX_CHANNEL_HZ) thr[b] = FT8.RX_CHANNEL_MIN_SCORE;
       }
     }
+    // Scores bruts de toutes les cases, gardés par ligne de départ (lignes nouvelles seulement)
     let fresh = 0;
+    const nb = lastBase + 1;
+    const raw = [];
     for (let sp = minStart; sp <= maxStart; sp++) {
-      let list = this._coarseCache.get(row0 + sp);
-      if (!list) {
-        list = [];
-        for (let b = 0; b <= lastBase; b++) {
+      let sc = this._coarseCache.get(row0 + sp);
+      if (!sc) {
+        // log(p du ton attendu / moyenne des 7 autres) sur les 21 cases Costas. Mesuré contre le
+        // score de ft8_lib (FT8CN : écarts en dB aux voisins en temps et en fréquence) et contre
+        // le même score sur spectre blanchi par fréquence : ft8_lib sépare nettement moins bien
+        // les signaux faibles (à -20 dB : signal 4-7 pour un bruit jusqu'à 5), le blanchiment
+        // n'apporte rien, et une raie continue sur un ton Costas ne gêne pas ce score.
+        sc = new Float32Array(nb);
+        for (let b = 0; b < nb; b++) {
           let score = 0;
           for (let si = 0; si < 3; si++) {
             for (let i = 0; i < 7; i++) {
@@ -1491,17 +1500,29 @@ class FT8Modem {
               else if (sigP > 0) score += 10;
             }
           }
-          if (score > thr[b]) list.push({ b, score });
+          sc[b] = score;
         }
-        this._coarseCache.set(row0 + sp, list);
+        this._coarseCache.set(row0 + sp, sc);
         if (++fresh % 60 === 0) await this._yieldToBrowser();
       }
-      for (const c of list) {
-        const key = (row0 + sp) + ':' + c.b;
+      raw.push(sc);
+    }
+    // Bruit de fond de chaque fréquence : médiane des scores de tous les départs de la
+    // fenêtre (une trame n'en occupe que quelques-uns). Score normalisé = brut − médiane :
+    // une fréquence polluée (voix, sifflement, bruit coloré) ne prend plus les places d'un
+    // signal faible sur une fréquence calme.
+    const floor = FT8Modem._columnMedians(raw, nb);
+    this._syncFloor = floor;
+    for (let k = 0; k < raw.length; k++) {
+      const sp = minStart + k, sc = raw[k];
+      for (let b = 0; b < nb; b++) {
+        const score = sc[b] - floor[b];
+        if (!(score > thr[b])) continue;
+        const key = (row0 + sp) + ':' + b;
         if (this._tried.has(key)) continue; // déjà affiné sans succès : l'audio ne changera pas
-        const freq0 = (kLo + c.b / 2) * binWidth;
+        const freq0 = (kLo + b / 2) * binWidth;
         const sampleOff = off0 + sp * nsps / 2;
-        if (sampleOff >= 0 && !covered(sampleOff, freq0)) coarseAll.push({ sampleOff, sp, b: c.b, freq0, score: c.score, key, row: row0 + sp });
+        if (sampleOff >= 0 && !covered(sampleOff, freq0)) coarseAll.push({ sampleOff, sp, b, freq0, score, key, row: row0 + sp });
       }
     }
 
@@ -1735,6 +1756,30 @@ class FT8Modem {
     return found;
   }
 
+  /** Médiane de chaque colonne b d'une liste de lignes (Float32Array de longueur nb). */
+  static _columnMedians(rows, nb) {
+    const n = rows.length, med = new Float32Array(nb);
+    if (!n) return med;
+    const col = new Float32Array(n), mid = n >> 1;
+    for (let b = 0; b < nb; b++) {
+      for (let k = 0; k < n; k++) col[k] = rows[k][b];
+      // sélection rapide (Hoare) du rang `mid`
+      let lo = 0, hi = n - 1;
+      while (lo < hi) {
+        const pivot = col[(lo + hi) >> 1];
+        let i = lo, j = hi;
+        while (i <= j) {
+          while (col[i] < pivot) i++;
+          while (col[j] > pivot) j--;
+          if (i <= j) { const t = col[i]; col[i] = col[j]; col[j] = t; i++; j--; }
+        }
+        if (mid <= j) hi = j; else if (mid >= i) lo = i; else break;
+      }
+      med[b] = col[mid];
+    }
+    return med;
+  }
+
   /**
    * Fréquences (ton 0) des canaux du réseau : recherche à seuil bas autour d'elles.
    * Les scores déjà calculés sont oubliés (ils dépendent du seuil).
@@ -1743,8 +1788,7 @@ class FT8Modem {
     const list = (freqs || []).filter((f) => f > 0).map(Number).sort((a, b) => a - b);
     if (list.join(',') === this._channels.join(',')) return;
     this._channels = list;
-    this._coarseCache = new Map();
-    this._tried = new Map();
+    this._tried = new Map(); // seuils changés : les cases écartées peuvent redevenir candidates
   }
 
   _setActivity(freqs) {
@@ -1828,7 +1872,7 @@ class FT8Modem {
     this._decodedSpans = [];
     this._reportedUndecoded = [];
     this._specRows = new Map();    // ligne absolue (½ symbole) -> {p : demi-raies, sum : 8 tons glissants}
-    this._coarseCache = new Map(); // ligne de départ absolue -> [{b, score}] (scores de synchro > 4)
+    this._coarseCache = new Map(); // ligne de départ absolue -> Float32Array des scores bruts de synchro (toutes les demi-raies)
     this._tried = new Map();       // 'ligne:b' -> ligne : case affinée sans succès, pas réessayée
     this._pendingFail = [];        // échecs forts en attente d'être « posés » (onUndecoded)
     if (!this._channels) this._channels = []; // canaux du réseau (setChannels), gardés d'une écoute à l'autre

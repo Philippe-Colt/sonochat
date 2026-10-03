@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Plugin local (pas de paquet npm) : à enregistrer avant super.onCreate
         registerPlugin(UsbSerialPlugin.class);
+        registerPlugin(ListenPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

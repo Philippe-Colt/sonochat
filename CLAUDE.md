@@ -299,6 +299,23 @@ Pour comparer sur le terrain, `settings.rxMode` :
   balise de l'annuaire restent appliqués. Les deux stations doivent être dans le même mode.
 - Changer de mode enregistre et **recharge** l'application (nouveau modem ; refusé pendant un envoi).
 
+## Garder la main sur le micro (`holdMic`, `app.js`)
+
+Depuis Android 9, une appli qui passe en arrière-plan (assistant vocal Gemini ouvert par-dessus,
+autre appli, écran éteint) reçoit du **silence** du micro, sans erreur (AppOps `RECORD_AUDIO`
+arrêté). Pendant l'écoute :
+- **Application** : service au premier plan `ListenService` (type `microphone`, notification
+  « ChatMTX écoute », verrou partiel du processeur), plugin `ListenService` (`ListenPlugin.java`,
+  `start`/`stop`, demande `POST_NOTIFICATIONS` sur Android 13+). Vérifié sur émulateur API 36 :
+  en arrière-plan, AppOps `RECORD_AUDIO` reste « running » avec le service, s'arrête sans.
+  Plugins natifs : `Capacitor.Plugins.X` (pas de `registerPlugin` sans @capacitor/core empaqueté).
+- **Navigateur** : `navigator.wakeLock` (écran gardé allumé).
+- **Partout, surveillance toutes les 0,5 s** (`micCheck`) : zéros exacts > 2 s sur l'analyseur
+  (le système coupe le micro), piste `muted`/`ended`, contexte audio suspendu (`resume`) →
+  bandeau orange « Micro pris par une autre application » (`#mic-lost`) et, au premier plan,
+  **nouvelle capture** après 4 s (au plus une toutes les 10 s, jamais pendant une émission).
+  L'assistant reste prioritaire tant qu'il écoute lui-même : seule la reprise est possible.
+
 ## Barre des canaux (au-dessus de la saisie)
 
 Remplace l'ancien spectre autour d'une seule fréquence (`drawChannels` dans `app.js`). Une
@@ -319,8 +336,16 @@ stations simultanées sur des fréquences différentes sont toutes décodées (c
    raies au **demi-pas** (3,125 Hz), sur les 40 dernières s (`RX_SEARCH_WINDOW`) + une trame.
    Lignes alignées sur la position absolue, **gardées en cache** (`_specRows`) avec la somme
    glissante des 8 tons : une passe ne calcule que les 2 s nouvelles
-2. **Recherche Costas temps × fréquence**, scores par ligne de départ en cache (`_coarseCache`),
-   seuil d'admission `RX_COARSE_MIN_SCORE` 15 (max du bruit mesuré 13-17). Sélection de
+2. **Recherche Costas temps × fréquence** : score brut = Σ log(p ton attendu / moyenne des 7
+   autres) sur les 21 cases Costas, **tous** les scores gardés par ligne de départ
+   (`_coarseCache`, `Float32Array`). **Normalisé par le bruit de fond de chaque fréquence** :
+   score − médiane des départs de la fenêtre pour cette demi-raie (`_columnMedians`, fond brut
+   ≈ -10,4). Seuils normalisés : `RX_COARSE_MIN_SCORE` 25 (bruit max 23-26),
+   `RX_CHANNEL_MIN_SCORE` 19 sur les canaux (bruit max 18-21) ; signal à -20 dB : 20-37.
+   Mesuré et écarté : le score de **ft8_lib** (FT8CN, écarts en dB aux voisins en temps et en
+   fréquence) sépare bien moins les signaux faibles (-20 dB : 4-7 pour un bruit jusqu'à 5) ;
+   blanchir le spectre par fréquence n'apporte rien ; une raie continue sur un ton Costas ne
+   gêne pas notre score. Sélection de
    **20 cases distinctes** (temps ≥ 20 symboles **ou** fréquence ≥ 30 Hz). Case affinée sans
    succès mémorisée (`_tried`) : jamais réessayée, laisse sa place aux suivantes
    **Canaux connus** (`setChannels`, annuaire) : seuil d'admission bas `RX_CHANNEL_MIN_SCORE`
@@ -405,10 +430,18 @@ node tests/ptt-timing.js
 # Efficacité selon la fréquence audio : chaîne BLU simulée (filtre 300-2700 Hz, distorsion) — ~8 min
 node tests/passband.js 8        # → bande utile 500-2500 Hz (décodage plat)
 
+# Bande son d'essai à jouer devant (ou câblée à) un téléphone : trames « PC99SNR -xx » toutes
+# les 15 s, de plus en plus faibles ; BRUIT=enregistrement.wav (ex. réception HF), GAIN_DB=-20
+# pour une entrée micro (une sortie ligne de PC sature), NIVEAUX=0,-10,-14,...
+node tests/test-audio.js essai.wav 1000
+
 # Sensibilité en conditions d'écoute réelles (flux 48 kHz, passes de 2 s, horloge ±150 ppm,
 # fréquence ±10 Hz), comparée à une autre version du modem — ~20 min avec l'ancien
 git show eeb6e19:ft8-modem.js > /tmp/ancien.js
-node tests/sensitivity.js 20 /tmp/ancien.js     # SNRS=-19,-20,-21 pour choisir les niveaux
+node tests/sensitivity.js 20 /tmp/ancien.js     # SNRS=-19,-20,-21 ; F0=1000 ; plusieurs fichiers comparés
+# BRUIT=ambiant (rose, voix, sifflements, clics) ou BRUIT=enregistrement.wav (48 kHz mono, ex.
+# sortie de réception d'un IC-7300 : `arecord -D plughw:CARD=CODEC,DEV=0 -f S16_LE -r 48000 -c 1`).
+# Bruit HF réel (80 m, USB 3 kHz) : plus dur que le blanc ; -19 dB : multi 9/20, ancien 1/20.
 
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
 node tests/link-audio.js        # SNR -10 dB (argument : autre SNR) ; dont 3e station sur autre fréquence

@@ -979,14 +979,117 @@
       modem.stopListening();
       btnListen.classList.remove('active');
       clearSpectrum();
+      holdMic(false);
     } else {
       try {
         await modem.startListening();
         btnListen.classList.add('active');
         hideMicHelp();
+        holdMic(true);
       } catch (err) {
         showMicHelp(err);
       }
+    }
+  }
+
+  // === Garder la main sur le micro ===
+  // Application : service au premier plan (type micro) pendant l'écoute, sinon Android coupe le
+  // micro dès qu'une autre appli passe devant (assistant vocal...) ou que l'écran s'éteint.
+  // Navigateur : écran maintenu allumé. Partout : surveillance du micro toutes les 0,5 s —
+  // silence absolu (Android rend des zéros exacts quand il coupe le micro), piste coupée ou
+  // terminée, contexte audio suspendu — avec bandeau et reprise automatique de la capture.
+  const listenService = (() => {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    // Sans @capacitor/core empaqueté, les plugins natifs sont dans Capacitor.Plugins
+    if (cap.registerPlugin) return cap.registerPlugin('ListenService');
+    return (cap.Plugins && cap.Plugins.ListenService) || null;
+  })();
+  if (listenService) listenService.stop().catch(() => {}); // rechargement : pas de service orphelin
+  const MIC_SILENT_MS = 2000;      // zéros exacts plus longtemps : micro coupé par le système
+  const MIC_RETRY_MS = 4000;       // micro perdu depuis : on relance la capture
+  const MIC_RETRY_GAP_MS = 10000;  // au plus une relance toutes les 10 s
+  let micTimer = null, micZeroSince = 0, micLostSince = 0, micLastRetry = 0, micRestarting = false;
+  let screenLock = null;
+
+  function holdMic(on) {
+    if (on) {
+      if (listenService) listenService.start().catch((e) => console.warn('[MIC] service :', e && e.message));
+      else if (navigator.wakeLock && !screenLock) {
+        navigator.wakeLock.request('screen').then((l) => { screenLock = l; l.addEventListener('release', () => { screenLock = null; }); }, () => {});
+      }
+      watchTrack();
+      if (!micTimer) micTimer = setInterval(micCheck, 500);
+    } else {
+      if (listenService) listenService.stop().catch(() => {});
+      if (screenLock) { screenLock.release().catch(() => {}); screenLock = null; }
+      clearInterval(micTimer);
+      micTimer = null;
+      setMicLost(false);
+    }
+  }
+
+  function watchTrack() {
+    const tr = modem.mediaStream && modem.mediaStream.getAudioTracks()[0];
+    if (!tr || tr.__chatmtxWatched) return;
+    tr.__chatmtxWatched = true;
+    tr.addEventListener('mute', () => setMicLost(true));
+    tr.addEventListener('unmute', () => setMicLost(false));
+    tr.addEventListener('ended', () => { setMicLost(true); recoverMic(true); });
+  }
+
+  const micBuf = new Float32Array(2048);
+  function micCheck() {
+    if (!modem.listening || micRestarting || !modem.mediaStream) return;
+    const now = Date.now();
+    const ctx = modem.audioCtx;
+    if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {});
+    const tr = modem.mediaStream && modem.mediaStream.getAudioTracks()[0];
+    let lost = !tr || tr.readyState === 'ended' || tr.muted;
+    if (modem.analyser && !lost) {
+      modem.analyser.getFloatTimeDomainData(micBuf);
+      let mx = 0;
+      for (let i = 0; i < micBuf.length; i++) { const v = Math.abs(micBuf[i]); if (v > mx) mx = v; }
+      if (mx === 0) { if (!micZeroSince) micZeroSince = now; } else micZeroSince = 0;
+      lost = micZeroSince && now - micZeroSince > MIC_SILENT_MS;
+    }
+    setMicLost(!!lost);
+    // Perdu depuis un moment et l'appli au premier plan : nouvelle capture (le système rend
+    // parfois le micro à une nouvelle demande, pas à l'ancienne)
+    if (lost && now - micLostSince > MIC_RETRY_MS && document.visibilityState === 'visible') recoverMic(false);
+  }
+
+  async function recoverMic(force) {
+    const now = Date.now();
+    if (micRestarting || (!force && now - micLastRetry < MIC_RETRY_GAP_MS) || modem.transmitting) return;
+    micRestarting = true;
+    micLastRetry = now;
+    console.log('[MIC] micro perdu : nouvelle capture');
+    try {
+      modem.stopListening();
+      await modem.startListening();
+      micZeroSince = 0;
+      watchTrack();
+    } catch (e) {
+      console.warn('[MIC] reprise impossible :', e && e.message);
+    } finally {
+      micRestarting = false;
+      btnListen.classList.toggle('active', modem.listening);
+    }
+  }
+
+  function setMicLost(lost) {
+    if (lost && !micLostSince) micLostSince = Date.now();
+    if (!lost) micLostSince = 0;
+    let el = document.getElementById('mic-lost');
+    if (lost && !el) {
+      el = document.createElement('div');
+      el.id = 'mic-lost';
+      el.className = 'mic-lost';
+      el.textContent = 'Micro pris par une autre application (assistant vocal ?) : plus rien n\'est recu. Reprise automatique des qu\'il est libere.';
+      document.body.appendChild(el);
+    } else if (!lost && el) {
+      el.remove();
     }
   }
 

@@ -32,6 +32,12 @@
 
         </activity>
 
+        <!-- Écoute au premier plan : garde le micro quand une autre appli passe devant -->
+        <service
+            android:name=".ListenService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -55,6 +61,11 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- Alerte 9-line : vibration a la reception de l'en-tete -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Service d'écoute au premier plan (micro gardé en arrière-plan, processeur éveillé) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Lecture du QR code d'un annuaire (outil Annuaire → SCANNER) ; facultatif -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

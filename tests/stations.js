@@ -55,12 +55,12 @@ function teleType(v) {
 }
 
 // Appelée par la page émettrice pour chaque séquence de symboles
-async function air(from, fr, dur) {
+async function air(from, fr, dur, freq) {
   if (global.__tamper) fr = global.__tamper(from, fr) || fr;
   const start = now();
   const absBase = Math.round((start / K) * SR);
   const desc = fr.telemetry !== null ? { kind: 'tele', ...teleType(fr.telemetry) } : { kind: fr.blocks.length > 1 ? 'ext' : 'text', text: fr.blocks.join('|') };
-  txLog.push({ t: start, from, ...desc });
+  txLog.push({ t: start, wall: Date.now(), freq, from, ...desc });
   for (const to of STATIONS) {
     if (to === from) continue;
     const page = pages[to];
@@ -136,7 +136,7 @@ async function setupPage(page, name) {
         if (opts.onProgress) opts.onProgress(i + 1, list.length);
         const fr = decode(list[i]);
         const dur = (list[i].length === 79 ? 79 : list[i].length) * 0.16 * K;
-        await window.__air(name, fr, dur);
+        await window.__air(name, fr, dur, this.baseFreq);
         await sleep(dur * 1000);
         if (i < list.length - 1) await sleep(FT8.MULTI_FRAME_GAP * 1000);
       }
@@ -345,7 +345,7 @@ async function scenario(title, fn) {
     const ctx = await browser.newContext({ viewport: { width: 400, height: 860 }, geolocation: { latitude: 48.8530, longitude: 2.3499, accuracy: 5 }, permissions: ['geolocation'] });
     const page = await ctx.newPage();
     page.on('pageerror', (e) => console.log(`    [${name}] ERREUR JS : ${e.message}`));
-    await page.exposeFunction('__air', (from, fr, dur) => air(from, fr, dur));
+    await page.exposeFunction('__air', (from, fr, dur, freq) => air(from, fr, dur, freq));
     await page.goto(URL);
     pages[name] = page;
   }
@@ -741,6 +741,36 @@ async function scenario(title, fn) {
     check('carte de XY : unité F4MTX (balise)', /F4MTX/.test(lbl) && /balise/.test(lbl), lbl);
     await sleep(3000);
     check('pas de 2e balise avant 1 min', txLog.filter((x) => x.from === 'PC' && x.type === 'pos').length === 1);
+  });
+
+  await scenario('36. Annuaire : canal d\'émission et créneau de balise', async () => {
+    await freshAll();
+    const DIR = '#reseau;creneau=13;tour=2;version=7;date=2026-10-03\nPC;F4MTX;infanterie;section;1460;2\nXY;F4XYZ;;;1400;1\nZZ;F1ZZZ\n';
+    for (const name of STATIONS) {
+      await pages[name].setInputFiles('#directory-file', { name: 'annuaire.csv', mimeType: 'text/csv', buffer: Buffer.from(DIR) });
+    }
+    await sleep(500);
+    const pc = await pages.PC.evaluate(() => ({ f: window.__modem && window.__modem.baseFreq, dis: document.getElementById('setting-base-freq').disabled,
+      st: document.getElementById('directory-status').textContent }));
+    check('PC émet sur son canal 1460 Hz, réglage manuel verrouillé', pc.f === 1460 && pc.dis, pc);
+    check('état : canal, créneau, version', /canal 1460 Hz/.test(pc.st) && /creneau 2\/2/.test(pc.st) && /version 7 du 2026-10-03/.test(pc.st), pc.st);
+    const zz = await pages.ZZ.evaluate(() => ({ f: window.__modem.baseFreq, dis: document.getElementById('setting-base-freq').disabled }));
+    check('ZZ sans canal : fréquence manuelle', zz.f === 1000 && !zz.dis, zz);
+    await sendText('PC', 'XY', 'CANAUX', 'standard');
+    await waitQuiet(30);
+    const msg = txLog.find((x) => x.from === 'PC' && x.kind !== 'tele'), ack = txLog.find((x) => x.from === 'XY' && x.type === 'ack');
+    check('message sur 1460 Hz, accusé de XY sur son canal 1400 Hz', msg && msg.freq === 1460 && ack && ack.freq === 1400, [msg, ack]);
+    // Balise : seulement au début du créneau 2 (13-26 s de chaque tour de 26 s)
+    const before = txLog.length;
+    await pages.PC.evaluate(() => { const c = document.getElementById('setting-beacon'); c.checked = true; c.dispatchEvent(new Event('change')); });
+    const deadline = Date.now() + 40000;
+    while (Date.now() < deadline && !txLog.slice(before).some((x) => x.type === 'pos')) await sleep(250);
+    const b = txLog.slice(before).find((x) => x.type === 'pos');
+    const phase = b ? b.wall % 26000 : -1;
+    check('balise de PC au début de son créneau 2 (13 s après le début du tour)', b && phase >= 13000 && phase < 13000 + 1500 + 600, b && 'phase ' + phase + ' ms');
+    check('balise sur le canal de PC', b && b.freq === 1460);
+    const info = await pages.PC.evaluate(() => document.getElementById('beacon-info').textContent);
+    check('paramètres : créneau affiché', /Creneau 2\/2/.test(info), info);
   });
 
   await scenario('33. MEDEVAC ouvre directement le 9-line', async () => {

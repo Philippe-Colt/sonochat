@@ -267,6 +267,11 @@ class SonoLink {
     return !r.aborted;
   }
 
+  /** Émission possible tout de suite : rien en cours d'envoi, rien qui arrive (émissions en créneau). */
+  canTransmitNow() {
+    return !this._sending && !this._rxInProgress() && !this.channelBusy();
+  }
+
   cancel() {
     if (!this._sending) return;
     this._cancelled = true;

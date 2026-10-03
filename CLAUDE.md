@@ -64,6 +64,23 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   secours…) ou SIDC APP-6 de 15 car. ; échelon (equipe → division) en position 12 du SIDC (pas sur
   les symboles de secours `E`). Type inconnu : ignoré, l'entrée est gardée. La carte dessine les
   unités (POSREP, position connue, moi) avec ce symbole ; bulle « Santé, Compagnie ».
+- **Canal et créneau** (colonnes 5 et 6, `court;long;type;échelon;canal;créneau`, colonne
+  vide ou `-` = non renseignée) : canal = fréquence audio d'émission en Hz (ton 0, 200-3 000),
+  créneau = rang 1-98 des émissions automatiques. En-tête facultatif
+  `#reseau;creneau=15;tour=12;pas=60;bande=500-2500;version=3;date=2026-10-03` (`parseNetHeader` ;
+  créneau 13-600 s, défaut 15 ; tour = nombre de créneaux, défaut = plus grand créneau, agrandi
+  s'il est trop petit). Contrôles à l'import (`warnings`, affichés) : canaux à moins de 50 Hz,
+  créneau en double, valeurs refusées. Stocké dans `chatmtx-directory-net` `{channels, net}`.
+  - **Ma ligne** (mon indicatif) : son canal **remplace la fréquence manuelle** (`txFreq`,
+    champ verrouillé, réglage manuel gardé) ; messages, accusés et balises partent sur mon canal.
+    Toutes les stations reçoivent tous les canaux (décodeur large bande).
+  - **Balise dans mon créneau** (`mySlot`, `nextSlotStart`, horloge UTC du téléphone : le
+    créneau k commence à `(k-1)·créneau` s dans chaque tour depuis l'origine Unix) : due → elle
+    attend le début de mon créneau (1,5 s de tolérance) et ne part que si `link.canTransmitNow()`
+    (sinon tour suivant) ; au plus une balise par tour. Les messages manuels ne sont pas
+    soumis aux créneaux.
+  - Bande conseillée (mesure `tests/passband.js`) : 500-2 500 Hz, pas de 60 Hz, **1 400-2 500
+    d'abord** (19 canaux sans harmonique dans la bande), puis 500-1 340 (15).
 - Traduction **à l'affichage seulement** (`data-call` sur chaque indicatif, `refreshCalls`) :
   l'historique garde le code court, un annuaire importé plus tard s'applique aussi aux anciens
   messages. Code inconnu → code court affiché.

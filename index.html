@@ -129,6 +129,7 @@
                     </div>
                     <p id="directory-status" class="setting-info"></p>
                     <p class="setting-info">Fichier texte ou CSV : une ligne par station, indicatif court, indicatif long, puis (facultatif) type d'unite et echelon pour la carte, ex. <b>PC;F4MTX;infanterie;section</b> ou <b>XY;F4XYZ;pompiers</b>. Sans entree, l'indicatif court est affiche.</p>
+                    <p class="setting-info">Reseau a plusieurs stations : 5e colonne = <b>canal</b> (frequence d'emission en Hz, 500-2500, au moins 50 Hz d'ecart ; 1400-2500 d'abord), 6e = <b>creneau</b> (1-98) des balises automatiques, ex. <b>PC;F4MTX;infanterie;section;1400;1</b> ou <b>XY;F4XYZ;;;1460;2</b> (colonne vide ou -). En-tete facultatif : <b>#reseau;creneau=15;tour=12;version=3;date=2026-10-03</b> (creneau en s, tour = nombre de creneaux). Toutes les stations recoivent tous les canaux en meme temps.</p>
                     <p class="setting-info">Types : infanterie, motorisee, mecanisee, blinde, reco, artillerie, genie, sol-air, aviation, transmissions, nrbc, renseignement, police-militaire, sante, logistique, maintenance, transport, commandement, pompiers, samu, police, gendarmerie, secours (ou un code SIDC APP-6 de 15 car.). Echelons : equipe, groupe, section, compagnie, bataillon, regiment, brigade, division.</p>
                 </div>
                 <div class="setting-group">
@@ -137,8 +138,9 @@
                     <span id="volume-val">80%</span>
                 </div>
                 <div class="setting-group">
-                    <label>Frequence de base (Hz)</label>
+                    <label>Frequence d'emission (Hz)</label>
                     <input type="number" id="setting-base-freq" min="500" max="3000" value="1000" step="50">
+                    <p id="base-freq-info" class="setting-info"></p>
                 </div>
                 <div class="setting-group">
                     <label>Port serie (PTT)</label>

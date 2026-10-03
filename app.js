@@ -57,6 +57,7 @@
   const btnDirectoryClear = document.getElementById('btn-directory-clear');
   const directoryFile = document.getElementById('directory-file');
   const directoryStatus = document.getElementById('directory-status');
+  const baseFreqInfo = document.getElementById('base-freq-info');
   const apkVersionsEl = document.getElementById('apk-versions');
 
   // Application Android (Capacitor) : PTT par port serie USB natif, fichiers dans l'APK
@@ -71,6 +72,7 @@
   const _rxBubbles = new Map(); // id de reception SonoLink -> { el, msg }
   let directory = {};           // annuaire : indicatif court -> indicatif long
   let directoryUnits = {};      // annuaire : indicatif court -> {type (SIDC), echelon} pour la carte
+  let directoryNet = { channels: {}, net: null }; // annuaire : canal (Hz) et créneau par station, en-tête réseau
 
   // === Init ===
   // Arrivee depuis l'ancienne adresse sonochat.f4mtx.com (legacy/index.html) :
@@ -128,7 +130,7 @@
   function initModem() {
     const settings = loadSettings();
     modem = new FT8Modem({
-      baseFreq: settings.baseFreq,
+      baseFreq: txFreq(),
       volume: settings.volume / 100,
     });
     modem.updateSettings({ pttLeadMs: settings.pttLeadMs, pttTailMs: settings.pttTailMs, voxTone: settings.voxTone });
@@ -578,6 +580,8 @@
       }
       saveAndApplySettings();
       updateMyCall();
+      updateDirectoryStatus();
+      updateBeaconInfo();
     });
     myCallEl.addEventListener('click', askCallsign);
 
@@ -588,8 +592,10 @@
       if (!Object.keys(directory).length || !confirm('Effacer l\'annuaire ?')) return;
       directory = {};
       directoryUnits = {};
+      directoryNet = { channels: {}, net: null };
       saveDirectory();
       refreshCalls();
+      applyChannel();
       updateDirectoryStatus();
     });
 
@@ -693,6 +699,7 @@
     settingCallsign.value = settings.callsign || '';
     updateMyCall();
     updateDirectoryStatus();
+    updateChannelInfo();
     updateInputState(); // limite et compteur du mode enregistre (11 ou 128)
 
     // Canvas resize
@@ -1149,7 +1156,7 @@
   function saveAndApplySettings() {
     const settings = {
       volume: parseInt(settingVolume.value),
-      baseFreq: parseInt(settingBaseFreq.value),
+      baseFreq: settingBaseFreq.disabled ? loadSettings().baseFreq : parseInt(settingBaseFreq.value), // canal de l'annuaire : réglage manuel gardé
       pttSignal: settingPttSignal.value,
       pttActiveHigh: settingPttLevel.value === 'high',
       txMode: settingTxMode.value,
@@ -1167,7 +1174,45 @@
       v: 3,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));
-    modem.updateSettings({ ...settings, volume: settings.volume / 100 });
+    modem.updateSettings({ ...settings, baseFreq: txFreq(), volume: settings.volume / 100 });
+    updateChannelInfo();
+  }
+
+  // === Canal et créneau (annuaire) ===
+  /** Ma ligne de l'annuaire : {freq, slot} ou null. */
+  function myChannel() {
+    const call = myCallsign() || loadSettings().callsign;
+    return (call && directoryNet.channels[call]) || null;
+  }
+
+  /** Fréquence d'émission : canal de l'annuaire s'il y en a un, sinon réglage manuel. */
+  function txFreq() {
+    const ch = myChannel();
+    return ch && ch.freq ? ch.freq : loadSettings().baseFreq;
+  }
+
+  /** Créneau des émissions automatiques : {slot, slotS, round} ou null. */
+  function mySlot() {
+    const ch = myChannel(), net = directoryNet.net;
+    return ch && ch.slot && net && net.round ? { slot: ch.slot, slotS: net.slotS, round: net.round } : null;
+  }
+
+  function applyChannel() {
+    if (modem) modem.updateSettings({ baseFreq: txFreq() });
+    updateChannelInfo();
+    updateBeaconInfo();
+  }
+
+  function updateChannelInfo() {
+    const ch = myChannel();
+    const fixed = !!(ch && ch.freq);
+    settingBaseFreq.disabled = fixed;
+    if (fixed) settingBaseFreq.value = ch.freq;
+    else settingBaseFreq.value = loadSettings().baseFreq;
+    if (baseFreqInfo) {
+      baseFreqInfo.textContent = fixed ? 'Canal impose par l\'annuaire pour ' + (myCallsign() || '') + ' : ' + ch.freq + ' Hz.'
+        : 'Frequence audio du premier ton (le signal occupe 50 Hz au-dessus). Un canal dans l\'annuaire la remplace.';
+    }
   }
 
   // === Annuaire ===
@@ -1176,9 +1221,11 @@
       const saved = localStorage.getItem('sonochat-directory');
       directory = saved ? JSON.parse(saved) : {};
       directoryUnits = JSON.parse(localStorage.getItem('sonochat-directory-units') || '{}');
+      directoryNet = JSON.parse(localStorage.getItem('chatmtx-directory-net') || 'null') || { channels: {}, net: null };
     } catch {
       directory = {};
       directoryUnits = {};
+      directoryNet = { channels: {}, net: null };
     }
   }
 
@@ -1186,6 +1233,7 @@
     try {
       localStorage.setItem('sonochat-directory', JSON.stringify(directory));
       localStorage.setItem('sonochat-directory-units', JSON.stringify(directoryUnits));
+      localStorage.setItem('chatmtx-directory-net', JSON.stringify(directoryNet));
     } catch (e) {
       console.warn('Annuaire non enregistre:', e);
     }
@@ -1194,9 +1242,14 @@
   function updateDirectoryStatus(extra) {
     const n = Object.keys(directory).length;
     const t = Object.keys(directoryUnits).length;
+    const c = Object.keys(directoryNet.channels).length, net = directoryNet.net;
+    const ch = myChannel(), slot = mySlot();
+    const mine = ch ? 'Ma station : ' + [ch.freq ? 'canal ' + ch.freq + ' Hz' : '', slot ? 'creneau ' + slot.slot + '/' + slot.round
+      + ' (' + slot.slotS + ' s, tour ' + fmtDuration(slot.slotS * slot.round) + ')' : ''].filter(Boolean).join(', ') + '.' : '';
     directoryStatus.textContent = (n ? n + ' indicatif' + (n > 1 ? 's' : '') + ' dans l\'annuaire'
-      + (t ? ', ' + t + ' avec type d\'unite' : '') : 'Annuaire vide')
-      + (extra ? ' — ' + extra : '');
+      + (t ? ', ' + t + ' avec type d\'unite' : '') + (c ? ', ' + c + ' avec canal ou creneau' : '')
+      + (net && (net.version || net.date) ? ' (version ' + [net.version, net.date].filter(Boolean).join(' du ') + ')' : '') : 'Annuaire vide')
+      + (extra ? ' — ' + extra : '') + (mine ? ' ' + mine : '');
     btnDirectoryClear.disabled = n === 0;
   }
 
@@ -1216,11 +1269,14 @@
         updateDirectoryStatus('aucune entree valide, annuaire inchange');
         return;
       }
+      if (r.warnings.length) report += '. A verifier : ' + r.warnings.slice(0, 4).join(' ; ') + (r.warnings.length > 4 ? '...' : '');
       directory = r.map; // un import remplace l'annuaire
       directoryUnits = r.units;
+      directoryNet = { channels: r.channels, net: r.net };
       saveDirectory();
       TacMap.refresh();
       refreshCalls();
+      applyChannel();
       updateDirectoryStatus(report);
     };
     reader.onerror = () => updateDirectoryStatus('lecture du fichier impossible');
@@ -1415,13 +1471,19 @@
   // Envoi si le temps OU la distance depuis la derniere balise est atteint, jamais
   // plus d'une fois par minute, jamais pendant un envoi ou une reception.
   const BEACON_MIN_GAP_MS = 60000;
+
+  /** 90 → « 1 min 30 s », 180 → « 3 min », 20 → « 20 s ». */
+  function fmtDuration(sec) {
+    const m = Math.floor(sec / 60), r = sec % 60;
+    return (m ? m + ' min' : '') + (m && r ? ' ' : '') + (r || !m ? r + ' s' : '');
+  }
   const BEACON_CHECK_MS = 15000;
   const POS_KEY = 'chatmtx-positions';
   const POS_PER_STATION = 100;
   let positions = {};        // indicatif -> [[lat, lon, t]] (balises recues et emises)
   try { positions = JSON.parse(localStorage.getItem(POS_KEY) || '{}'); } catch (e) { positions = {}; }
   let beaconWatch = null, beaconTimer = null, beaconFix = null, beaconBusy = false;
-  let beaconLast = null;
+  let beaconLast = null, beaconNextSlot = null;
   try { beaconLast = JSON.parse(localStorage.getItem('chatmtx-beacon-last') || 'null'); } catch (e) { beaconLast = null; }
 
   function storePosition(call, lat, lon, t) {
@@ -1460,16 +1522,44 @@
     updateBeaconInfo();
   }
 
+  // Avec un créneau dans l'annuaire : la balise part au début de mon créneau (horloge UTC),
+  // seulement si le canal est libre (sinon au tour suivant), au plus une fois par tour.
+  const SLOT_GRACE_MS = 1500;  // départ encore accepté juste après le début du créneau
+
+  function beaconMinGap() {
+    const sl = mySlot();
+    return Math.max(BEACON_MIN_GAP_MS, sl ? sl.slotS * sl.round * 1000 : 0);
+  }
+
   function beaconTick() {
     const s = loadSettings();
     if (!s.beaconOn || !beaconFix || beaconBusy || !myCallsign() || link.busy || modem.transmitting) return;
     const now = Date.now();
-    if (beaconLast && now - beaconLast.t < BEACON_MIN_GAP_MS) return;
-    const dueTime = !beaconLast || (s.beaconMin > 0 && now - beaconLast.t >= s.beaconMin * 60000);
+    // Écart minimal compté au créneau près (un tour exact peut tomber quelques ms avant)
+    if (beaconLast && now - beaconLast.t < beaconMinGap() - SLOT_GRACE_MS) return;
+    const dueTime = !beaconLast || (s.beaconMin > 0 && now - beaconLast.t >= s.beaconMin * 60000 - SLOT_GRACE_MS);
     const dueDist = !!beaconLast && s.beaconM > 0 && distanceM(beaconLast, beaconFix) >= s.beaconM;
     if (!dueTime && !dueDist) return;
-    const fix = beaconFix;
     beaconBusy = true;
+    const sl = mySlot();
+    if (!sl) { sendBeacon(); return; }
+    const at = nextSlotStart(now, sl.slot, sl.slotS, sl.round, SLOT_GRACE_MS);
+    beaconNextSlot = at;
+    updateBeaconInfo();
+    setTimeout(() => {
+      beaconNextSlot = null;
+      // Canal occupé, envoi ou réception en cours : on laisse passer ce créneau
+      if (!loadSettings().beaconOn || !beaconFix || link.busy || modem.transmitting || !link.canTransmitNow()) {
+        beaconBusy = false;
+        updateBeaconInfo();
+        return;
+      }
+      sendBeacon();
+    }, Math.max(0, at - Date.now()));
+  }
+
+  function sendBeacon() {
+    const fix = beaconFix;
     link.beacon(fix.lat, fix.lon).then((sent) => {
       beaconBusy = false;
       if (!sent) return;
@@ -1488,7 +1578,11 @@
     if (!(s.beaconMin > 0 || s.beaconM > 0)) { beaconInfo.textContent = 'Choisir un intervalle de temps ou une distance.'; return; }
     const last = beaconLast ? 'Derniere balise a ' + new Date(beaconLast.t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
       + ' (' + (Medevac.toMgrs(beaconLast.lat, beaconLast.lon) || '') + ')' : 'Aucune balise encore';
-    beaconInfo.textContent = last + ' · ' + (err ? err : beaconFix ? 'GPS ±' + Math.round(beaconFix.acc || 0) + ' m' : 'en attente du GPS...');
+    const sl = mySlot();
+    const hhmmss = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const slotTxt = sl ? ' · Creneau ' + sl.slot + '/' + sl.round + ' de l\'annuaire (au plus une balise par tour de ' + fmtDuration(sl.slotS * sl.round) + ')'
+      + (beaconNextSlot ? ', prochaine a ' + hhmmss(beaconNextSlot) : '') : '';
+    beaconInfo.textContent = last + ' · ' + (err ? err : beaconFix ? 'GPS ±' + Math.round(beaconFix.acc || 0) + ' m' : 'en attente du GPS...') + slotTxt;
   }
 
   // === Service Worker ===

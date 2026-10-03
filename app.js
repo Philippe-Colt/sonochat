@@ -650,10 +650,7 @@
       document.getElementById('apk-link-label').textContent = 'Mettre a jour l\'application (APK)';
       document.getElementById('apk-link-info').textContent = 'Telecharge la derniere version depuis chatmtx.f4mtx.com, a installer par-dessus.';
     }
-    apkLink.addEventListener('click', () => {
-      // Parametre unique : jamais une ancienne copie en cache (navigateur, Cloudflare)
-      apkLink.href = APK_URL + '?t=' + Date.now();
-    });
+    guardApkLink(apkLink, document.getElementById('apk-link-info'));
     if (isNative || 'serial' in navigator) {
       btnSerialConnect.addEventListener('click', connectSerial);
       settingPttSignal.addEventListener('change', saveAndApplySettings);
@@ -1482,6 +1479,36 @@
     showUpdateGate(local, remote);
   }
 
+  const APK_INSTALL_HELP = 'Telechargement lance dans le navigateur. Ouvrez la notification '
+    + '<b>chatmtx.apk</b> puis touchez <b>Installer</b> (Android peut demander d\'autoriser le navigateur '
+    + 'a installer des applications). Inutile de retoucher le bouton : chaque toucher relance un telechargement.';
+  const APK_GUARD_MS = 60000;
+
+  /**
+   * Lien de telechargement de l'APK : un seul telechargement par minute. Le
+   * telechargement part en silence dans le navigateur ; sans retour visible, on
+   * retouchait et on accumulait chatmtx (1).apk, (2).apk...
+   */
+  function guardApkLink(a, helpEl) {
+    let lockedUntil = 0;
+    const label = a.textContent;
+    a.addEventListener('click', (e) => {
+      if (Date.now() < lockedUntil) { e.preventDefault(); return; }
+      lockedUntil = Date.now() + APK_GUARD_MS;
+      // Parametre unique : jamais une ancienne copie en cache (navigateur, Cloudflare)
+      a.href = APK_URL + '?t=' + Date.now();
+      a.classList.add('locked');
+      const span = a.querySelector('span') || a;
+      span.textContent = 'Telechargement lance...';
+      if (helpEl) { helpEl.innerHTML = APK_INSTALL_HELP; helpEl.classList.remove('hidden'); }
+      setTimeout(() => {
+        a.classList.remove('locked');
+        span.textContent = a.querySelector('span') ? 'Relancer le telechargement (APK)' : 'Relancer le telechargement';
+      }, APK_GUARD_MS);
+    });
+    return label;
+  }
+
   function showUpdateGate(local, remote) {
     if (modem && modem.listening) modem.stopListening();
     const el = document.createElement('div');
@@ -1495,12 +1522,11 @@
         <p>Une nouvelle version de ChatMTX est disponible : <b>${escapeHtml(remote)}</b> (installee : ${escapeHtml(local)}).</p>
         <p>Telechargez-la puis installez-la par-dessus l'application actuelle. Vos messages et reglages sont conserves.</p>
         <a class="update-gate-btn" href="${APK_URL}">Telecharger la mise a jour</a>
+        <p class="update-gate-steps hidden">${APK_INSTALL_HELP}</p>
       </div>
     `;
     // Lien externe : Capacitor l'ouvre dans le navigateur, qui telecharge l'APK
-    el.querySelector('a').addEventListener('click', (e) => {
-      e.currentTarget.href = APK_URL + '?t=' + Date.now();
-    });
+    guardApkLink(el.querySelector('a'), el.querySelector('.update-gate-steps'));
     document.body.appendChild(el);
   }
 

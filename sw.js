@@ -11,6 +11,7 @@ const ASSETS = [
   './native-serial.js',
   './medevac.js',
   './medevac-ui.js',
+  './directory-ui.js',
   './qrcode.js',
   './leaflet.js',
   './leaflet.css',

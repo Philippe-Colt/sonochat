@@ -81,6 +81,32 @@ check('affichage : long si connu', lookupCall({ PC: 'F4MTX' }, 'PC') === 'F4MTX'
   check('créneau suivant', S(0, 1, 15, 3) === 0 && S(1, 1, 15, 3) === 45000 && S(1000, 2, 15, 3) === 15000 && S(16000, 2, 15, 3) === 60000
     && S(44000, 3, 15, 3) === 75000 && S(16000, 2, 15, 3, 2000) === 15000, [S(1, 1, 15, 3), S(16000, 2, 15, 3, 2000)]);
 }
+{
+  const D = require('../directory.js');
+  const plan = D.channelPlan();
+  check('plan : 19 canaux 1400-2480 d\'abord, puis 15 de 500 à 1340', plan.length === 34 && plan[0] === 1400 && plan[18] === 2480
+    && plan[19] === 500 && plan[33] === 1340, plan);
+  const a = D.allocate([{ short: 'PC', freq: 1460, slot: 3 }, { short: 'XY' }, { short: 'ZZ', freq: 1480, slot: 3 }, { short: 'AB', freq: 9000 }], {});
+  const by = {}; a.entries.forEach((e) => { by[e.short] = e; });
+  check('attribution : choix valides gardés, conflits et manques complétés', by.PC.freq === 1460 && by.PC.slot === 3
+    && by.XY.freq === 1400 && by.XY.slot === 1 && by.ZZ.freq === 1520 && by.ZZ.slot === 2 && by.AB.freq === 1580 && by.AB.slot === 4
+    && a.net.round === 4 && a.full.length === 0, a.entries);
+  check('attribution : aucun conflit restant', D.checkChannels(Object.fromEntries(a.entries.map((e) => [e.short, e]))).length === 0);
+  const many = D.allocate(Array.from({ length: 36 }, (_, i) => ({ short: 'S' + i })), {});
+  check('36 stations : 34 canaux, 2 sans canal signalées', many.full.length === 2 && many.entries.filter((e) => e.freq).length === 34 && many.net.round === 36, many.full);
+  const entries = [{ short: 'PC', long: 'F4MTX', type: 'SFGPUCI--------', echelon: 'D', freq: 1400, slot: 1 },
+    { short: 'XY', long: 'F4XYZ', freq: 1460, slot: 2 }, { short: 'ZZ', long: 'F1ZZZ' }, { short: 'K1', long: 'W1AW', type: 'SFGPUCE--------' }];
+  const net = { slotS: 20, round: 2, version: '8', date: '2026-10-03' };
+  const txt = D.serializeDirectory(entries, net);
+  check('fichier écrit', txt === '#reseau;creneau=20;tour=2;version=8;date=2026-10-03\nPC;F4MTX;infanterie;section;1400;1\nXY;F4XYZ;;;1460;2\nZZ;F1ZZZ\nK1;W1AW;genie\n', txt);
+  const back = parseDirectory(txt);
+  check('relu à l\'identique', JSON.stringify(D.toEntries(back)) === JSON.stringify(entries.slice().sort((x, y) => (x.short < y.short ? -1 : 1)))
+    && back.net.slotS === 20 && back.net.version === '8' && back.warnings.length === 0, D.toEntries(back));
+  const link = D.directoryLink(txt);
+  check('lien QR compact, sans caractère à encoder', link === 'https://chatmtx.f4mtx.com/#annuaire=reseau;creneau=20;tour=2;version=8;date=2026-10-03~PC;F4MTX;infanterie;section;1400;1~XY;F4XYZ;;;1460;2~ZZ;F1ZZZ~K1;W1AW;genie', link);
+  check('lien relu (même encodé par l\'appareil photo)', D.directoryFromLink(link) === txt && D.directoryFromLink(encodeURI(link).replace(/;/g, '%3B')) === txt
+    && D.directoryFromLink('https://exemple.fr/') === null);
+}
 check('affichage : court sinon', lookupCall({ PC: 'F4MTX' }, 'AB') === 'AB' && lookupCall(null, 'AB') === 'AB');
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');

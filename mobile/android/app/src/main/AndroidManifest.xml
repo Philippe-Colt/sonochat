@@ -55,6 +55,9 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- Alerte 9-line : vibration a la reception de l'en-tete -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Lecture du QR code d'un annuaire (outil Annuaire → SCANNER) ; facultatif -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- PTT par interface USB-série ; non requis pour installer l'application -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 </manifest>

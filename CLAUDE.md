@@ -16,7 +16,9 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
   Sans DOM, testable en Node
 - `medevac-ui.js` — Saisie à gros boutons, carte dans le fil, plein écran, partage, QR code, impression
 - `qrcode.js` — Générateur de QR code (Kazuhiko Arase, licence MIT, non modifié)
-- `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long)
+- `directory.js` — Annuaire : `parseDirectory` (import CSV/texte), `lookupCall` (court → long),
+  création (`channelPlan`, `allocate`, `serializeDirectory`, `directoryLink`/`directoryFromLink`)
+- `directory-ui.js` — Outil de création d'annuaire (gros boutons, attribution, QR code, scan)
 - `native-serial.js` — Application Android : `NativePttPort`, même interface que le `SerialPort`
   de Web Serial, au-dessus du plugin natif `UsbSerial`
 - `app.js` — Interface chat : relie modem ↔ SonoLink, bulles, indicatifs, spectre, historique localStorage
@@ -81,6 +83,21 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
     soumis aux créneaux.
   - Bande conseillée (mesure `tests/passband.js`) : 500-2 500 Hz, pas de 60 Hz, **1 400-2 500
     d'abord** (19 canaux sans harmonique dans la bande), puis 500-1 340 (15).
+- **Outil de création** (paramètres → Annuaire → **Créer / modifier**, `DirectoryUI`) : liste des
+  stations à gros boutons (bordure rouge = à vérifier), fiche par station (indicatifs, type et
+  échelon en listes, canal ± au pas du plan ou « auto », créneau ± ou « auto » ; doublon et `99`
+  refusés), **ATTRIBUER** (`allocate` : choix valides gardés, conflits et manques complétés dans
+  l'ordre de `channelPlan` — 1 400 → 2 480 Hz puis 500 → 1 340, 34 canaux —, créneaux libres les
+  plus bas, tour = plus grand créneau), durée du créneau 13-60 s, contrôles en direct.
+  **ENREGISTRER** applique ici (`applyDirectoryText`, comme un import) ; toute modification prend
+  une **nouvelle version** (+1) datée du jour, portée par l'en-tête. Diffusion : **QR CODE**
+  (lien `https://chatmtx.f4mtx.com/#annuaire=reseau;…~PC;F4MTX;…` : lignes séparées par `~`, `#`
+  de l'en-tête retiré, aucun caractère à encoder ; ~150 car. pour 3 stations, ~1,3 Ko pour 34),
+  **PARTAGER** (texte : partage natif, Web Share, presse-papiers), **FICHIER** (.csv, web
+  seulement). Réception : **SCANNER** (`BarcodeDetector` + caméra arrière, si le navigateur le
+  permet ; permission CAMERA facultative dans l'APK), **COLLER** (lien ou fichier), ou appareil
+  photo du téléphone → le lien ouvre ChatMTX dans le navigateur (`importDirectoryLink` : confirmation
+  avec version et nombre de stations, adresse nettoyée).
 - Traduction **à l'affichage seulement** (`data-call` sur chaque indicatif, `refreshCalls`) :
   l'historique garde le code court, un annuaire importé plus tard s'applique aussi aux anciens
   messages. Code inconnu → code court affiché.
@@ -305,7 +322,7 @@ node tests/loopback.js quick 3   # standard seul, rapide
 # Protocole SonoLink : 2 stations, canal simulé, horloge virtuelle, pertes forcées — ~1 s
 node tests/arq.js
 
-# Import d'annuaire
+# Import d'annuaire, canaux/créneaux, attribution, fichier et lien de QR code
 node tests/directory.js
 
 # Messages formatés 9-line / MIST : codage, MGRS (référence publiée), texte en clair

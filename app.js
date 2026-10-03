@@ -98,6 +98,22 @@
   }
 
   /**
+   * Lien d'annuaire (QR code scanné par l'appareil photo) : https://…/#annuaire=… →
+   * proposé à l'import, puis retiré de l'adresse.
+   */
+  function importDirectoryLink() {
+    if (!location.hash.startsWith('#annuaire=')) return;
+    const text = directoryFromLink(location.hash);
+    window.history.replaceState(null, '', location.pathname + location.search);
+    const p = text && parseDirectory(text);
+    if (!p || !p.imported) { alert('Lien d\'annuaire illisible.'); return; }
+    const v = p.net.version ? ' version ' + p.net.version + (p.net.date ? ' du ' + p.net.date : '') : '';
+    if (!confirm('Importer l\'annuaire' + v + ' (' + p.imported + ' stations) ?\nIl remplace l\'annuaire de ce telephone.')) return;
+    const report = applyDirectoryText(text);
+    if (report) alert('Annuaire importe : ' + report);
+  }
+
+  /**
    * « gap » des flexbox inconnu avant Chrome 84 (Android 9 sans WebView a jour) :
    * classe no-flex-gap, style.css remet des marges a la place.
    */
@@ -587,6 +603,14 @@
 
     // Annuaire
     btnDirectoryImport.addEventListener('click', () => directoryFile.click());
+    document.getElementById('btn-directory-edit').addEventListener('click', () => DirectoryUI.open());
+    DirectoryUI.init({
+      current: () => ({ map: directory, units: directoryUnits, channels: directoryNet.channels, net: directoryNet.net }),
+      apply: applyDirectoryText,
+      share: nativeShare,
+      isNative,
+    });
+    importDirectoryLink();
     directoryFile.addEventListener('change', importDirectory);
     btnDirectoryClear.addEventListener('click', () => {
       if (!Object.keys(directory).length || !confirm('Effacer l\'annuaire ?')) return;
@@ -1253,32 +1277,39 @@
     btnDirectoryClear.disabled = n === 0;
   }
 
+  /**
+   * Applique un fichier d'annuaire (import, outil de création, lien de QR code, collage) :
+   * il remplace l'annuaire. Renvoie le compte rendu, ou null si aucune entrée valide.
+   */
+  function applyDirectoryText(text) {
+    const r = parseDirectory(text);
+    let report = r.imported + ' entree' + (r.imported > 1 ? 's' : '') + ' importee' + (r.imported > 1 ? 's' : '');
+    if (r.skipped.length) {
+      const lines = r.skipped.slice(0, 10).join(', ') + (r.skipped.length > 10 ? '...' : '');
+      report += ', ' + r.skipped.length + ' ligne' + (r.skipped.length > 1 ? 's' : '') + ' ignoree' + (r.skipped.length > 1 ? 's' : '') + ' (' + lines + ')';
+    }
+    if (r.imported === 0) {
+      updateDirectoryStatus('aucune entree valide, annuaire inchange');
+      return null;
+    }
+    if (r.warnings.length) report += '. A verifier : ' + r.warnings.slice(0, 4).join(' ; ') + (r.warnings.length > 4 ? '...' : '');
+    directory = r.map; // un import remplace l'annuaire
+    directoryUnits = r.units;
+    directoryNet = { channels: r.channels, net: r.net };
+    saveDirectory();
+    TacMap.refresh();
+    refreshCalls();
+    applyChannel();
+    updateDirectoryStatus(report);
+    return report;
+  }
+
   function importDirectory() {
     const file = directoryFile.files && directoryFile.files[0];
     directoryFile.value = ''; // permet de reimporter le meme fichier
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const r = parseDirectory(reader.result);
-      let report = r.imported + ' entree' + (r.imported > 1 ? 's' : '') + ' importee' + (r.imported > 1 ? 's' : '');
-      if (r.skipped.length) {
-        const lines = r.skipped.slice(0, 10).join(', ') + (r.skipped.length > 10 ? '...' : '');
-        report += ', ' + r.skipped.length + ' ligne' + (r.skipped.length > 1 ? 's' : '') + ' ignoree' + (r.skipped.length > 1 ? 's' : '') + ' (' + lines + ')';
-      }
-      if (r.imported === 0) {
-        updateDirectoryStatus('aucune entree valide, annuaire inchange');
-        return;
-      }
-      if (r.warnings.length) report += '. A verifier : ' + r.warnings.slice(0, 4).join(' ; ') + (r.warnings.length > 4 ? '...' : '');
-      directory = r.map; // un import remplace l'annuaire
-      directoryUnits = r.units;
-      directoryNet = { channels: r.channels, net: r.net };
-      saveDirectory();
-      TacMap.refresh();
-      refreshCalls();
-      applyChannel();
-      updateDirectoryStatus(report);
-    };
+    reader.onload = () => applyDirectoryText(reader.result);
     reader.onerror = () => updateDirectoryStatus('lecture du fichier impossible');
     reader.readAsText(file);
   }

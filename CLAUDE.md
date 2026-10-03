@@ -273,6 +273,9 @@ node tests/tacmap.js
 # Séquencement PTT (avance/maintien, annulation) et adaptateur natif
 node tests/ptt-timing.js
 
+# Efficacité selon la fréquence audio : chaîne BLU simulée (filtre 300-2700 Hz, distorsion) — ~8 min
+node tests/passband.js 8        # → bande utile 500-2500 Hz, canaux d'abord 1400-2500 (harmoniques)
+
 # Bout en bout : 2 FT8Modem réels + SonoLink, air simulé (GFSK + bruit), 12 kHz — ~2,5 min
 node tests/link-audio.js        # SNR -10 dB (argument : autre SNR)
 

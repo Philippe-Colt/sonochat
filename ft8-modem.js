@@ -40,6 +40,15 @@ const FT8 = {
   MULTI_FRAME_MAX_CHUNKS: 16,
   MULTI_FRAME_GAP: 0.5,          // seconds between frames
 
+  // Bande audio utile et canaux par station (mesure : node tests/passband.js, chaîne BLU
+  // 300-2 700 Hz simulée). Décodage identique de 500 à 2 500 Hz, dégradé aux bords du
+  // filtre ; sous ~1 350 Hz l'harmonique 2 (-38 dBc) retombe dans la bande : canaux
+  // attribués d'abord de 1 400 à 2 500 Hz, puis de 500 à 1 340 Hz.
+  TX_BAND_MIN: 500,
+  TX_BAND_MAX: 2500,
+  CHANNEL_STEP: 60,              // Hz entre canaux (signal 50 Hz + marge)
+  CLEAN_BAND_MIN: 1400,          // au-dessus : harmoniques hors bande
+
   // PTT par tonalite (cable VOX type Digirig) : tonalite continue sur le canal
   // droit, detectee par le cable qui met le PTT a la masse ; FT8 sur le gauche.
   // Plus aigue = detection plus rapide.

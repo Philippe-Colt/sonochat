@@ -1363,7 +1363,7 @@ body.alert-9line .medevac-btn { color: #3a0810; }
   font-weight: 700;
   cursor: pointer;
 }
-.tm-actions [data-act="go"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tm-actions [data-act="go"] { background: #ef6c00; border-color: #ef6c00; color: #fff; }
 .no-flex-gap .tm-bar > * + *, .no-flex-gap .tm-actions > * + * { margin-left: 8px; }
 /* Libellés des symboles lisibles sur le fond IGN : liseré blanc */
 .tm-sym svg text { paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
@@ -1449,3 +1449,9 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .update-gate-btn.locked, .app-link.locked { opacity: 0.55; pointer-events: auto; }
 .update-gate-steps { font-size: 0.9rem; color: var(--text-secondary); }
 .update-gate-steps.hidden { display: none; }
+
+.tm-ok { color: #2e7d32; }
+.tm-warn { color: #ef6c00; }
+.tm-actions .hidden { display: none; }
+.tm-actions [data-act="here"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tm-link { margin-left: 6px; border: 0; background: none; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }

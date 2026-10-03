@@ -191,6 +191,10 @@ Fond : **Plan IGN** (Géoplateforme WMTS PM, CORS ouvert, licence Etalab, « © 
 **IndexedDB** (`chatmtx-tiles`, clé `z/x/y`), PNG recompressées en **WebP** (~20 Ko/tuile).
 « Hors ligne » sur la carte : rayon 20 km, zooms 8-15 (~3 500 tuiles, ~77 Mo estimés à 48° N), 4 requêtes
 parallèles, 3 essais par tuile (l'IGN refuse parfois les rafales en HTTP 400), reprise.
+**404 « No data found »** (trous de l'IGN, ex. 2 tuiles sur 3 425 autour de Paris) : gardée comme
+tuile vide (`'empty'`), comptée faite, jamais redemandée. Bouton **« Carte HL »** : affiche d'abord
+l'**état de la zone** (`zoneStatus` : clés IndexedDB) — « ✓ Zone prête hors ligne » ou « incomplète,
+N manquantes » + **Compléter** — puis « Télécharger ici » ; hors réseau, état seul.
 Sans tuile : **fond monde embarqué** `world.json` (dans l'APK et précaché par le SW ; Natural
 Earth, domaine public ; 1,2 Mo, 393 Ko gzip) : 242 pays (contours 1:50m, noms français),
 361 lacs, 255 fleuves, 101 départements français (1:10m), 1 188 villes (grandes villes du monde,

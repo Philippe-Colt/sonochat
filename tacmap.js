@@ -288,7 +288,7 @@
           <b>Carte tactique</b>
           <button type="button" data-act="me" title="Centrer sur ma position">Moi</button>
           <button type="button" data-act="grid" title="Carroyage MGRS">MGRS</button>
-          <button type="button" data-act="dl" title="Télécharger la zone pour le hors ligne">Hors ligne</button>
+          <button type="button" data-act="dl" title="Carte hors ligne : état de la zone, téléchargement">Carte HL</button>
           <button type="button" class="tm-x" data-act="close" aria-label="Fermer">&times;</button>
         </div>
         <div class="tm-map" id="tm-map"></div>
@@ -512,45 +512,68 @@
     }
   }
 
-  // ---------- Téléchargement de la zone ----------
+  // ---------- Carte hors ligne : état de la zone, téléchargement ----------
+  const RADIUS = 20, ZMIN = 8, ZMAX = 15;
+
   function showDownload() {
     const panel = overlay.querySelector('#tm-panel');
     const st = root.Medevac.parsePosition((opts.station() || {}).pos);
-    const c = me || st || (map ? { lat: map.getCenter().lat, lon: map.getCenter().lng } : null);
+    const here = me || st || { lat: map.getCenter().lat, lon: map.getCenter().lng };
+    const hereLabel = me ? 'ma position GPS' : st ? 'la position de la station' : 'le centre de la carte';
     const zone = root.Tiles.zone();
-    const est = root.Tiles.estimate(c.lat, c.lon, 20, 8, 15);
+    const est = root.Tiles.estimate(here.lat, here.lon, RADIUS, ZMIN, ZMAX);
+    const mgrs = (p) => root.Medevac.toMgrs(p.lat, p.lon) || root.Medevac.formatLatLon(p.lat, p.lon);
+    const offline = navigator.onLine === false;
     panel.classList.remove('hidden');
     panel.innerHTML = `
       <p><b>Carte hors ligne (Plan IGN)</b></p>
-      <p>Autour de ${me ? 'ma position GPS' : st ? 'la position de la station' : 'le centre de la carte'} :
-        rayon 20 km, jusqu'au zoom 15 (rue). Environ ${est.tiles} tuiles, ~${Math.round(est.bytes / 1e6)} Mo.</p>
-      ${zone ? `<p class="tm-muted">Zone déjà téléchargée le ${new Date(zone.date).toLocaleDateString('fr-FR')} (${zone.tiles} tuiles${zone.failed ? ', ' + zone.failed + ' en échec' : ''}).</p>` : ''}
+      <p class="tm-zone">${zone ? 'Vérification de la zone…' : 'Aucune zone téléchargée : hors réseau, seul le fond monde est disponible.'}</p>
       <div class="tm-progress hidden"><div></div></div>
       <p class="tm-status"></p>
       <div class="tm-actions">
-        <button type="button" data-act="go">Télécharger</button>
-        <button type="button" data-act="erase">Effacer</button>
+        <button type="button" data-act="go" class="hidden">Compléter</button>
+        <button type="button" data-act="here">${zone ? 'Télécharger ici' : 'Télécharger'}</button>
         <button type="button" data-act="hide">Fermer</button>
-      </div>`;
-    const status = panel.querySelector('.tm-status'), bar = panel.querySelector('.tm-progress');
+      </div>
+      <p class="tm-muted">Ici : ${esc(hereLabel)}, rayon ${RADIUS} km jusqu'au zoom ${ZMAX} (rue), environ ${est.tiles} tuiles, ~${Math.round(est.bytes / 1e6)} Mo.
+        ${zone ? '<button type="button" class="tm-link" data-act="erase">Effacer la zone</button>' : ''}</p>`;
+    const zoneEl = panel.querySelector('.tm-zone'), status = panel.querySelector('.tm-status'), bar = panel.querySelector('.tm-progress');
+    const goBtn = panel.querySelector('[data-act="go"]'), hereBtn = panel.querySelector('[data-act="here"]');
+    if (zone) {
+      root.Tiles.zoneStatus(zone).then((z) => {
+        const when = new Date(zone.date).toLocaleDateString('fr-FR');
+        const where = `${zone.radiusKm} km autour de ${esc(mgrs(zone))}, téléchargée le ${when}`;
+        if (!z.missing) {
+          zoneEl.innerHTML = `<b class="tm-ok">✓ Zone prête hors ligne</b> : ${where} (${z.total} tuiles). Rien à faire avant de couper le réseau.`;
+        } else {
+          zoneEl.innerHTML = `<b class="tm-warn">Zone incomplète</b> : ${where}, ${z.missing} tuile${z.missing > 1 ? 's' : ''} manquante${z.missing > 1 ? 's' : ''} sur ${z.total}.`
+            + (offline ? ' À compléter dès que le réseau revient.' : '');
+          if (!offline) goBtn.classList.remove('hidden');
+        }
+      }).catch(() => { zoneEl.textContent = 'Zone enregistrée (état illisible).'; });
+    }
+    if (offline) hereBtn.classList.add('hidden');
     panel.querySelector('[data-act="hide"]').onclick = () => { if (dl) dl.cancel(); panel.classList.add('hidden'); };
-    panel.querySelector('[data-act="erase"]').onclick = () => root.Tiles.clearAll().then(() => { status.textContent = 'Carte hors ligne effacée.'; });
-    panel.querySelector('[data-act="go"]').onclick = (e) => {
+    const erase = panel.querySelector('[data-act="erase"]');
+    if (erase) erase.onclick = () => root.Tiles.clearAll().then(showDownload);
+    const run = (btn, c) => {
       if (dl) { dl.cancel(); return; }
-      if (navigator.onLine === false) { status.textContent = 'Pas de réseau : téléchargez avant de partir.'; return; }
-      e.target.textContent = 'Arrêter';
+      btn.textContent = 'Arrêter';
       bar.classList.remove('hidden');
-      dl = root.Tiles.download(c.lat, c.lon, 20, 8, 15, (done, total, bytes, failed) => {
+      dl = root.Tiles.download(c.lat, c.lon, RADIUS, ZMIN, ZMAX, (done, total, bytes, failed) => {
         bar.firstElementChild.style.width = (100 * done / total).toFixed(1) + '%';
-        status.textContent = `${done} / ${total} tuiles · ${(bytes / 1e6).toFixed(1)} Mo${failed ? ' · ' + failed + ' en échec' : ''}`;
+        status.textContent = `${done} / ${total} tuiles · ${(bytes / 1e6).toFixed(1)} Mo${failed ? ' · ' + failed + ' à reprendre' : ''}`;
       });
       dl.promise.then((r) => {
         dl = null;
-        e.target.textContent = 'Télécharger';
-        status.textContent = r.cancelled ? `Arrêté : ${r.done} tuiles faites, la suite reprendra au prochain téléchargement.`
-          : `Terminé : ${(r.bytes / 1e6).toFixed(1)} Mo ajoutés${r.failed ? ', ' + r.failed + ' tuiles en échec (relancer pour compléter)' : ''}. La carte fonctionne hors ligne dans cette zone.`;
+        status.textContent = r.cancelled ? 'Arrêté : la suite reprendra avec « Compléter ».'
+          : r.failed ? `${r.failed} tuile${r.failed > 1 ? 's' : ''} non reçue${r.failed > 1 ? 's' : ''} (réseau) : « Compléter » pour les reprendre.`
+          : `Terminé : ${(r.bytes / 1e6).toFixed(1)} Mo ajoutés.`;
+        setTimeout(showDownload, 1200);
       });
     };
+    goBtn.onclick = () => run(goBtn, zone);
+    hereBtn.onclick = () => run(hereBtn, here);
   }
 
   root.TacMap = Object.assign({ init, open, close, pickPosition, refresh: () => { if (isOpen()) refresh(false); }, isOpen }, Core);

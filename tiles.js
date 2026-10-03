@@ -83,19 +83,25 @@
     })).catch(() => blob);
   }
 
-  // Le serveur IGN refuse parfois une rafale (HTTP 400/429) : nouvel essai, espacé
+  // Le serveur IGN refuse parfois une rafale (HTTP 400/429) : nouvel essai, espacé.
+  // 404 « No data found » : l'IGN n'a pas d'image à cet endroit, tuile vide définitive.
+  const EMPTY = 'empty';
   function fetchRetry(url, tries) {
     return fetch(url, { mode: 'cors' }).then((r) => {
       if (r.ok) return r.blob();
+      if (r.status === 404) return EMPTY;
       if (tries > 1) return new Promise((ok) => setTimeout(ok, 700)).then(() => fetchRetry(url, tries - 1));
       throw new Error('HTTP ' + r.status);
     });
   }
 
+  /** Tuile téléchargée et gardée ; résout avec le Blob, ou null si l'IGN n'en a pas (gardé comme vide). */
   function fetchTile(z, x, y) {
-    return fetchRetry(tileUrl(z, x, y), 3)
-      .then(toWebp)
-      .then((b) => putTile(z + '/' + x + '/' + y, b).then(() => b));
+    const key = z + '/' + x + '/' + y;
+    return fetchRetry(tileUrl(z, x, y), 3).then((b) => {
+      if (b === EMPTY) return putTile(key, EMPTY).then(() => null);
+      return toWebp(b).then((w) => putTile(key, w).then(() => w));
+    });
   }
 
   /**
@@ -111,7 +117,7 @@
       const [z, x, y] = list[i++];
       const key = z + '/' + x + '/' + y;
       return hasTile(key)
-        .then((has) => (has ? null : fetchTile(z, x, y).then((b) => { bytes += b.size; })))
+        .then((has) => (has ? null : fetchTile(z, x, y).then((b) => { if (b) bytes += b.size; })))
         .catch(() => { failed++; })
         .then(() => { done++; if (onProgress) onProgress(done, list.length, bytes, failed); })
         .then(worker);
@@ -122,6 +128,17 @@
       return { done, failed, bytes, cancelled };
     });
     return { promise, cancel: () => { cancelled = true; } };
+  }
+
+  /** État d'une zone enregistrée : tuiles présentes (y compris vides IGN) sur le total. */
+  function zoneStatus(z) {
+    if (!z) return Promise.resolve(null);
+    const list = tilesAround(z.lat, z.lon, z.radiusKm, z.zmin, z.zmax);
+    return op('readonly', (s) => s.getAllKeys()).then((keys) => {
+      const have = new Set(keys);
+      const missing = list.filter(([a, b, c]) => !have.has(a + '/' + b + '/' + c)).length;
+      return { total: list.length, have: list.length - missing, missing };
+    });
   }
 
   function zone() {
@@ -151,6 +168,7 @@
           img.src = url;
         };
         getTile(key).then((blob) => {
+          if (blob === EMPTY) return show(null); // pas de données IGN ici
           if (blob) return show(blob);
           if (navigator.onLine === false) return show(null);
           return fetchTile(coords.z, coords.x, coords.y).then(show, () => show(null));
@@ -161,7 +179,7 @@
     return new Layer({ attribution: ATTRIBUTION, minZoom: 3, maxZoom: 18, maxNativeZoom: 18 });
   }
 
-  const Tiles = { tilesAround, estimate, download, zone, clearAll, countTiles, layer, tileUrl, ATTRIBUTION, EST_BYTES };
+  const Tiles = { tilesAround, estimate, download, zone, zoneStatus, clearAll, countTiles, layer, tileUrl, ATTRIBUTION, EST_BYTES };
   if (typeof module === 'object' && module.exports) module.exports = Tiles;
   else root.Tiles = Tiles;
 })(typeof self !== 'undefined' ? self : this);

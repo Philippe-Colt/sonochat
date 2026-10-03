@@ -514,6 +514,16 @@
     });
     settingStationPos.addEventListener('change', () => { saveAndApplySettings(); updateStationPosInfo(); });
     settingContactFreq.addEventListener('change', saveAndApplySettings);
+    document.getElementById('btn-station-map').addEventListener('click', () => {
+      TacMap.pickPosition({
+        title: 'Position de la station', initial: Medevac.parsePosition(settingStationPos.value),
+        onPick: (p) => {
+          settingStationPos.value = Medevac.toMgrs(p.lat, p.lon) || p.lat.toFixed(5) + ', ' + p.lon.toFixed(5);
+          saveAndApplySettings();
+          updateStationPosInfo();
+        },
+      });
+    });
     btnStationGps.addEventListener('click', () => {
       if (!navigator.geolocation) return;
       stationPosInfo.textContent = 'Recherche de la position...';

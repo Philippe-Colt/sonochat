@@ -1367,3 +1367,47 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .no-flex-gap .tm-bar > * + *, .no-flex-gap .tm-actions > * + * { margin-left: 8px; }
 /* Libellés des symboles lisibles sur le fond IGN : liseré blanc */
 .tm-sym svg text { paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+
+/* Pointage d'une position sur la carte : au-dessus des écrans de saisie */
+.tm-overlay.tm-picker { z-index: 960; }
+.tm-cross {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px; /* centre exact du cadre de la carte = getCenter() */
+  z-index: 970;
+  pointer-events: none;
+  background:
+    linear-gradient(#c62828, #c62828) center / 2px 100% no-repeat,
+    linear-gradient(#c62828, #c62828) center / 100% 2px no-repeat;
+  border: 2px solid #c62828;
+  border-radius: 50%;
+}
+.tm-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.tm-pick-pos { flex: 1; min-width: 0; font-size: 0.85rem; color: var(--text-secondary); }
+.tm-pick-pos b { font-size: 1.1rem; color: var(--text-primary); }
+.tm-pick button {
+  min-height: 52px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.no-flex-gap .tm-pick > * + * { margin-left: 10px; }
+
+.tm-mapwrap { position: relative; flex: 1; min-height: 0; }
+.tm-mapwrap .tm-map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }

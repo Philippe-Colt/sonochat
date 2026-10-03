@@ -173,6 +173,11 @@ LACE → état sur l'unité, moi → GPS. Codes SIDC choisis sur planche et vali
 tests). **Vieillissement** : 100 % < 1 h, 60 % < 6 h, 30 % au-delà. **Carroyage MGRS** 100 km /
 10 km / 1 km selon le zoom (`gridLines`, `toUtm`/`fromUtm` de `medevac.js`).
 
+**Pointer une position** (`TacMap.pickPosition`) : bouton **CARTE** dans chaque écran de position
+des messages (`positionWidget` de `medevac-ui.js`) et pour la position de la station
+(paramètres). Mire fixe au centre du cadre de la carte (`.tm-mapwrap`), carte déplacée dessous ou
+toucher pour centrer, MGRS en direct, symboles existants en repère, « Valider ce point ».
+
 Fond : **Plan IGN** (Géoplateforme WMTS PM, CORS ouvert, licence Etalab, « © IGN ») dans
 **IndexedDB** (`chatmtx-tiles`, clé `z/x/y`), PNG recompressées en **WebP** (~20 Ko/tuile).
 « Hors ligne » sur la carte : rayon 20 km, zooms 8-15 (~3 500 tuiles, ~77 Mo estimés à 48° N), 4 requêtes

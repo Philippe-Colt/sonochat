@@ -272,12 +272,13 @@
         const station = M.parsePosition(opts.getStation().pos);
         return `<div class="mv-pos">
           <div class="mv-pos-value">${v ? esc(mgrs || '') : 'Aucune position'}</div>
-          <div class="mv-pos-sub">${v ? esc(M.formatLatLon(v.lat, v.lon)) + ' · ' + esc(v.src === 'gps' ? `GPS ±${Math.round(v.acc || 0)} m` : v.src === 'station' ? 'position de la station' : 'saisie') : ''}</div>
+          <div class="mv-pos-sub">${v ? esc(M.formatLatLon(v.lat, v.lon)) + ' · ' + esc(v.src === 'gps' ? `GPS ±${Math.round(v.acc || 0)} m` : v.src === 'station' ? 'position de la station' : v.src === 'carte' ? 'pointée sur la carte' : 'saisie') : ''}</div>
           ${precisionNote ? `<div class="mv-pos-sub">${esc(precisionNote)}</div>` : ''}
           <p class="mv-pos-msg" id="mv-pos-msg"></p>
         </div>
         <div class="mv-grid mv-grid-1">
           <button type="button" class="mv-big mv-red" data-pos="gps"><b>GPS</b><span>Position actuelle du téléphone</span></button>
+          ${window.TacMap ? '<button type="button" class="mv-big" data-pos="map"><b>CARTE</b><span>Pointer sur la carte</span></button>' : ''}
           ${station ? `<button type="button" class="mv-big" data-pos="station"><b>STATION</b><span>${esc(M.toMgrs(station.lat, station.lon) || M.formatLatLon(station.lat, station.lon))}</span></button>` : ''}
           <button type="button" class="mv-big" data-pos="edit"><b>SAISIR</b><span>MGRS ou « latitude, longitude »</span></button>
         </div>`;
@@ -292,6 +293,11 @@
             (e) => { msg.textContent = 'Position GPS impossible : ' + (e.code === 1 ? 'autorisation refusée.' : 'pas de signal, réessayez à découvert.'); },
             { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
         };
+        const mapBtn = r.querySelector('[data-pos="map"]');
+        if (mapBtn) mapBtn.onclick = () => window.TacMap.pickPosition({
+          title: 'Pointer la position', initial: obj[key],
+          onPick: (p) => { obj[key] = { lat: p.lat, lon: p.lon, src: 'carte' }; refresh(); },
+        });
         const stBtn = r.querySelector('[data-pos="station"]');
         if (stBtn) stBtn.onclick = () => { obj[key] = { ...M.parsePosition(opts.getStation().pos), src: 'station' }; refresh(); };
         r.querySelector('[data-pos="edit"]').onclick = () => {

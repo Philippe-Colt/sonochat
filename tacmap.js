@@ -254,14 +254,7 @@
         <div class="tm-map" id="tm-map"></div>
         <div class="tm-panel hidden" id="tm-panel"></div>`;
       document.body.appendChild(overlay);
-      map = L.map(overlay.querySelector('#tm-map'), { zoomControl: true, attributionControl: true, preferCanvas: false, worldCopyJump: true });
-      map.attributionControl.setPrefix(false);
-      // Fond monde sous les tuiles IGN (sinon il les recouvre, les tracés étant au-dessus des tuiles)
-      map.createPane('world').style.zIndex = 150;
-      fetch('world.json').then((r) => r.json()).then((g) => {
-        world = L.geoJSON(g, { pane: 'world', style: { color: '#7a8a99', weight: 1, fillColor: '#d9d4c7', fillOpacity: 1 }, interactive: false }).addTo(map);
-      }).catch(() => {});
-      root.Tiles.layer(L).addTo(map);
+      map = baseMap(overlay.querySelector('#tm-map'));
       tracksLayer = L.layerGroup().addTo(map);
       gridLayer = L.layerGroup().addTo(map);
       symbols = L.layerGroup().addTo(map);
@@ -280,6 +273,73 @@
         drawMe();
       }, () => {}, { enableHighAccuracy: true, maximumAge: 30000 });
     }
+  }
+
+  /** Carte de base : fond monde sous les tuiles IGN (sinon il les recouvre), tuiles hors ligne. */
+  function baseMap(el) {
+    const L = root.L;
+    const m = L.map(el, { zoomControl: true, attributionControl: true, worldCopyJump: true });
+    m.attributionControl.setPrefix(false);
+    m.createPane('world').style.zIndex = 150;
+    fetch('world.json').then((r) => r.json()).then((g) => {
+      L.geoJSON(g, { pane: 'world', style: { color: '#7a8a99', weight: 1, fillColor: '#d9d4c7', fillOpacity: 1 }, interactive: false }).addTo(m);
+    }).catch(() => {});
+    root.Tiles.layer(L).addTo(m);
+    return m;
+  }
+
+  /**
+   * Pointer une position sur la carte : mire fixe au centre, la carte se déplace
+   * dessous (ou toucher un point pour l'y amener). Symboles existants pour repère.
+   * @param {{title, initial: {lat, lon}|null, onPick: function({lat, lon})}} o
+   */
+  function pickPosition(o) {
+    const L = root.L;
+    const p = document.createElement('div');
+    p.className = 'tm-overlay tm-picker';
+    p.innerHTML = `
+      <div class="tm-bar">
+        <b>${esc(o.title || 'Pointer la position')}</b>
+        <button type="button" data-act="me">Moi</button>
+        <button type="button" class="tm-x" data-act="close" aria-label="Fermer">&times;</button>
+      </div>
+      <div class="tm-mapwrap"><div class="tm-map"></div><div class="tm-cross" aria-hidden="true"></div></div>
+      <div class="tm-pick">
+        <div class="tm-pick-pos"></div>
+        <button type="button" data-act="ok">Valider ce point</button>
+      </div>`;
+    document.body.appendChild(p);
+    const m = baseMap(p.querySelector('.tm-map'));
+    const st = root.Medevac.parsePosition((opts.station() || {}).pos);
+    const start = o.initial || me || st;
+    m.setView(start ? [start.lat, start.lon] : [46.6, 2.5], start ? 15 : 5);
+    // Symboles déjà connus, pour se repérer
+    const ref = L.layerGroup().addTo(m);
+    for (const s2 of collect(opts.history(), Date.now()).marks) {
+      L.marker([s2.lat, s2.lon], { icon: icon(s2.sidc, s2.unit ? opts.callLabel(s2.unit) : s2.label, ''), opacity: 0.7, interactive: false }).addTo(ref);
+    }
+    const posEl = p.querySelector('.tm-pick-pos');
+    const show = () => {
+      const c = m.getCenter();
+      posEl.innerHTML = `<b>${esc(root.Medevac.toMgrs(c.lat, c.lng) || '')}</b><br>${esc(root.Medevac.formatLatLon(c.lat, c.lng))}`;
+    };
+    m.on('move', show);
+    m.on('click', (e) => m.panTo(e.latlng));
+    show();
+    const done = () => { m.remove(); p.remove(); };
+    p.querySelector('[data-act="close"]').onclick = done;
+    p.querySelector('[data-act="me"]').onclick = () => {
+      if (me) { m.setView([me.lat, me.lon], Math.max(m.getZoom(), 15)); return; }
+      if (navigator.geolocation) navigator.geolocation.getCurrentPosition((g) => {
+        me = { lat: g.coords.latitude, lon: g.coords.longitude };
+        m.setView([me.lat, me.lon], Math.max(m.getZoom(), 15));
+      }, () => {}, { enableHighAccuracy: true, timeout: 15000 });
+    };
+    p.querySelector('[data-act="ok"]').onclick = () => {
+      const c = m.getCenter();
+      done();
+      o.onPick({ lat: c.lat, lon: ((c.lng + 540) % 360) - 180 });
+    };
   }
 
   function close() {
@@ -390,5 +450,5 @@
     };
   }
 
-  root.TacMap = Object.assign({ init, open, close, refresh: () => { if (isOpen()) refresh(false); }, isOpen }, Core);
+  root.TacMap = Object.assign({ init, open, close, pickPosition, refresh: () => { if (isOpen()) refresh(false); }, isOpen }, Core);
 })(typeof self !== 'undefined' ? self : this);

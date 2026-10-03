@@ -26,13 +26,14 @@ async function call(op, body, opts = {}) {
 
 (async () => {
   await new Promise((r) => srv.stdout.once('data', r));
-  const V2 = TEST_DIRECTORY.replace('version=1', 'version=2').replace('LIMA', 'MIKE');
+  const V1 = TEST_DIRECTORY.replace(/version=\d+/, 'version=1');
+  const V2 = TEST_DIRECTORY.replace(/version=\d+/, 'version=2').replace('LIMA', 'MIKE');
 
-  let r = await call('save', { reseau: 'test-1', code: 'secret42', text: TEST_DIRECTORY });
+  let r = await call('save', { reseau: 'test-1', code: 'secret42', text: V1 });
   check('création : nom réservé avec son code (nom en majuscules)', r.status === 200 && r.created && r.reseau === 'TEST-1' && r.stations === 12 && r.version === '1', r);
   check('CORS ouvert (application Android)', r.cors === '*');
   r = await call('load', { reseau: 'TEST-1', code: 'secret42' });
-  check('chargement avec le bon code : fichier identique', r.status === 200 && r.text === TEST_DIRECTORY, r);
+  check('chargement avec le bon code : fichier identique', r.status === 200 && r.text === V1, r);
   r = await call('load', { reseau: 'TEST-1', code: 'mauvais1' });
   const r2 = await call('load', { reseau: 'INCONNU', code: 'secret42' });
   check('code faux et réseau inconnu : même refus', r.status === 403 && r2.status === 403 && r.error === r2.error, [r, r2]);

@@ -596,6 +596,7 @@
       }
       saveAndApplySettings();
       updateMyCall();
+      clearSpectrum();
       updateDirectoryStatus();
       updateBeaconInfo();
     });
@@ -1081,6 +1082,7 @@
 
   // === Status ===
   function updateStatus(status) {
+    if (!modem || !modem.listening) clearSpectrum(); // émission sans écoute : mon canal en rouge
     statusIndicator.className = 'status ' + status;
     const textEl = statusIndicator.querySelector('.status-text');
     switch (status) {
@@ -1101,60 +1103,117 @@
     spectrumCanvas.width = rect.width * window.devicePixelRatio;
     spectrumCanvas.height = rect.height * window.devicePixelRatio;
     spectrumCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    clearSpectrum();
+  }
+
+  // === Barre des canaux : quel canal reçoit en ce moment ===
+  // Une case par canal de l'annuaire (indicatif de la station), plus le mien s'il n'y est pas.
+  // Remplissage discret : niveau audio du canal (analyseur) ; vert : trame FT8 en train
+  // d'arriver (synchro détectée par le modem) ; flash : trame décodée à l'instant ;
+  // rouge : mon canal pendant que j'émets. Trame hors canal connu : case « ? » à droite.
+  const CH_MATCH_HZ = 30;
+
+  function channelCells() {
+    const cells = [];
+    const ch = directoryNet.channels || {};
+    for (const call of Object.keys(ch)) if (ch[call].freq) cells.push({ freq: ch[call].freq, call });
+    const mine = modem ? modem.baseFreq : txFreq();
+    const me = myCallsign();
+    if (!cells.some((c) => Math.abs(c.freq - mine) < CH_MATCH_HZ)) cells.push({ freq: mine, call: me || '' });
+    cells.sort((a, b) => a.freq - b.freq);
+    for (const c of cells) c.mine = Math.abs(c.freq - mine) < CH_MATCH_HZ;
+    return cells;
   }
 
   function drawSpectrum(freqData, sampleRate, fftSize) {
+    drawChannels(freqData, sampleRate, fftSize);
+  }
+
+  function drawChannels(freqData, sampleRate, fftSize) {
     const w = spectrumCanvas.width / window.devicePixelRatio;
     const h = spectrumCanvas.height / window.devicePixelRatio;
-    const binWidth = sampleRate / fftSize;
+    const g = spectrumCtx;
+    g.fillStyle = '#16213e';
+    g.fillRect(0, 0, w, h);
+    if (!modem) return;
+    const cells = channelCells();
+    const act = modem.rxActivity ? modem.rxActivity() : { onAir: [], decoded: [] };
+    const near = (list, f) => list.some((x) => Math.abs(x - f) < CH_MATCH_HZ);
+    const stray = act.onAir.concat(act.decoded).filter((f) => !cells.some((c) => Math.abs(c.freq - f) < CH_MATCH_HZ));
+    const n = cells.length + (stray.length ? 1 : 0);
+    const cw = w / n;
 
-    spectrumCtx.fillStyle = '#16213e';
-    spectrumCtx.fillRect(0, 0, w, h);
-
-    // Show the FT8 band: baseFreq - 20 Hz to baseFreq + 70 Hz (~90 Hz window)
-    const freqMin = modem.baseFreq - 20;
-    const freqMax = modem.baseFreq + 70;
-    const binMin = Math.floor(freqMin / binWidth);
-    const binMax = Math.ceil(freqMax / binWidth);
-    const binRange = binMax - binMin;
-
-    // Frequency bars
-    const barWidth = w / binRange;
-    for (let i = 0; i < binRange; i++) {
-      const bin = binMin + i;
-      if (bin >= freqData.length) break;
-
-      const db = freqData[bin];
-      const normalized = Math.max(0, (db + 100) / 60);
-      const barHeight = normalized * h;
-      const x = i * barWidth;
-
-      const hue = 220 - normalized * 180;
-      spectrumCtx.fillStyle = `hsla(${hue}, 80%, 55%, 0.8)`;
-      spectrumCtx.fillRect(x, h - barHeight, barWidth + 0.5, barHeight);
+    // Niveau audio par canal (dB au-dessus de la médiane de la bande)
+    let level = null;
+    if (freqData && sampleRate && fftSize) {
+      const bw = sampleRate / fftSize;
+      const band = [];
+      for (let k = Math.floor(300 / bw); k < Math.min(freqData.length, Math.ceil(3000 / bw)); k++) band.push(freqData[k]);
+      band.sort((a, b) => a - b);
+      const floor = band.length ? band[band.length >> 1] : -100;
+      level = (f) => {
+        let m = -Infinity;
+        for (let k = Math.floor(f / bw); k <= Math.ceil((f + 50) / bw) && k < freqData.length; k++) m = Math.max(m, freqData[k]);
+        return Math.max(0, Math.min(1, (m - floor) / 30));
+      };
     }
 
-    // Mark the 8 FT8 tone frequencies
-    spectrumCtx.strokeStyle = 'rgba(233, 69, 96, 0.5)';
-    spectrumCtx.lineWidth = 1;
-    spectrumCtx.font = '8px sans-serif';
-    spectrumCtx.fillStyle = 'rgba(233, 69, 96, 0.7)';
-    for (let s = 0; s < 8; s++) {
-      const freq = modem.baseFreq + s * FT8.TONE_SPACING;
-      const x = ((freq - freqMin) / (freqMax - freqMin)) * w;
-      spectrumCtx.beginPath();
-      spectrumCtx.moveTo(x, 0);
-      spectrumCtx.lineTo(x, h);
-      spectrumCtx.stroke();
-      spectrumCtx.fillText(s.toString(), x + 2, 10);
+    const label = (txt, x, y, size, color, bold) => {
+      g.font = (bold ? 'bold ' : '') + size + 'px sans-serif';
+      g.fillStyle = color;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(txt, x, y);
+    };
+
+    cells.forEach((c, i) => {
+      const x = i * cw;
+      const onAir = near(act.onAir, c.freq), fresh = near(act.decoded, c.freq);
+      const tx = c.mine && modem.transmitting;
+      if (level && !tx) {
+        const v = level(c.freq);
+        g.fillStyle = 'rgba(80, 140, 255, 0.35)';
+        g.fillRect(x + 1, h - v * h, cw - 2, v * h);
+      }
+      if (tx || onAir || fresh) {
+        g.fillStyle = tx ? 'rgba(233, 69, 96, 0.85)' : fresh ? 'rgba(170, 255, 120, 0.9)' : 'rgba(46, 204, 113, 0.8)';
+        g.fillRect(x + 1, 1, cw - 2, h - 2);
+      }
+      if (c.mine) {
+        g.strokeStyle = '#e94560';
+        g.lineWidth = 2;
+        g.strokeRect(x + 1.5, 1.5, cw - 3, h - 3);
+      } else if (i > 0) {
+        g.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        g.fillRect(x, 4, 1, h - 8);
+      }
+      const hot = tx || onAir || fresh;
+      const txt = tx ? 'TX' : c.call ? displayCallShort(c.call, cw) : '';
+      if (cw >= 30) {
+        label(txt, x + cw / 2, h * 0.38, 12, hot ? '#0b1020' : '#cfd6ea', hot);
+        label(String(c.freq), x + cw / 2, h * 0.75, 9, hot ? '#0b1020' : 'rgba(207, 214, 234, 0.55)', false);
+      } else if (cw >= 14 || hot) {
+        label(txt, x + cw / 2, h / 2, cw >= 18 ? 11 : 9, hot ? '#0b1020' : '#cfd6ea', hot);
+      }
+    });
+
+    if (stray.length) {
+      const x = cells.length * cw;
+      g.fillStyle = 'rgba(46, 204, 113, 0.8)';
+      g.fillRect(x + 1, 1, cw - 2, h - 2);
+      label('?', x + cw / 2, cw >= 30 ? h * 0.38 : h / 2, 12, '#0b1020', true);
+      if (cw >= 30) label(String(Math.round(stray[0])), x + cw / 2, h * 0.75, 9, '#0b1020', false);
     }
   }
 
+  /** Indicatif court affiché dans une case (le long de l'annuaire s'il tient). */
+  function displayCallShort(call, cw) {
+    const long = directory[call];
+    return long && cw >= 12 + long.length * 7 ? long : call;
+  }
+
   function clearSpectrum() {
-    const w = spectrumCanvas.width / window.devicePixelRatio;
-    const h = spectrumCanvas.height / window.devicePixelRatio;
-    spectrumCtx.fillStyle = '#16213e';
-    spectrumCtx.fillRect(0, 0, w, h);
+    drawChannels(null);
   }
 
   // === Settings ===
@@ -1224,6 +1283,7 @@
 
   function applyChannel() {
     if (modem) modem.updateSettings({ baseFreq: txFreq() });
+    clearSpectrum();
     updateChannelInfo();
     updateBeaconInfo();
   }

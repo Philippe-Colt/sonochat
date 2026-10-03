@@ -277,6 +277,17 @@ pays (zoom ≤ 7) et de villes selon leur rang et le zoom, 80 au plus. Régéné
 dans l'historique du commit « Fond monde embarqué ». Emplacements de tuiles vides masqués
 (`visibility: hidden`, sinon cadre gris). Grille MGRS à partir du zoom 6 seulement. Leaflet 1.9.4 vendorisé (`leaflet.js`, `leaflet.css`).
 
+## Barre des canaux (au-dessus de la saisie)
+
+Remplace l'ancien spectre autour d'une seule fréquence (`drawChannels` dans `app.js`). Une
+case par canal de l'annuaire, avec l'indicatif de la station et sa fréquence, plus mon canal
+s'il n'y est pas (encadré rouge). Remplissage bleu discret : niveau audio du canal (analyseur,
+dB au-dessus de la médiane de la bande). **Vert** : trame FT8 en train d'arriver sur ce canal
+(`modem.rxActivity().onAir` : synchro partielle `_framesInProgress`, étendu qui continue,
+traîne attendue) ; **vert clair** : trame décodée depuis moins de 4 s ; **rouge « TX »** : mon
+canal pendant que j'émets. Trame hors canal connu : case « ? » à droite avec sa fréquence.
+L'analyseur tourne à la fréquence du contexte audio (48 kHz), pas à celle de la capture décimée.
+
 ## Démodulation (RX)
 
 Capture micro décimée à **12 kHz** (`RX_RATE`, FIR Blackman 65 coefs à 48 kHz, `decimationFilter`).

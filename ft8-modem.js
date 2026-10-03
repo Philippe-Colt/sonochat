@@ -1172,7 +1172,8 @@ class FT8Modem {
       if (this._spectrumFrameCount % 4 === 0 && this.onSpectrumData) {
         const freqData = new Float32Array(this.analyser.frequencyBinCount);
         this.analyser.getFloatFrequencyData(freqData);
-        this.onSpectrumData(freqData, sampleRate, this.analyser.fftSize);
+        // L'analyseur tourne à la fréquence du contexte audio (48 kHz), pas à celle de la capture décimée
+        this.onSpectrumData(freqData, this.analyser.context.sampleRate, this.analyser.fftSize);
       }
       this._spectrumRAF = requestAnimationFrame(spectrumLoop);
     };
@@ -1313,7 +1314,7 @@ class FT8Modem {
     let energy = 0;
     for (let i = 0; i < audio.length; i++) energy += audio[i] * audio[i];
     const rms = Math.sqrt(energy / audio.length);
-    if (energy / audio.length < 1e-8) { this._rxBusy = false; return; } // silence
+    if (energy / audio.length < 1e-8) { this._rxBusy = false; this._setActivity([]); return; } // silence
 
     // ================================================================
     // PASS 1 : spectre large bande (FFT par symbole), lignes alignées sur la
@@ -1345,7 +1346,9 @@ class FT8Modem {
     const nRows = rows.length;
     const maxStart = nRows - 2 * (FT8.NUM_SYMBOLS - 1) - 1;
     if (maxStart < 0) {
-      this._rxBusy = this._framesInProgress(rows, kLo, binWidth, maxStart).length > 0;
+      const onAir = this._framesInProgress(rows, kLo, binWidth, maxStart);
+      this._rxBusy = onAir.length > 0;
+      this._setActivity(onAir.map(f => f.freq0));
       this._rxBusyAt = performance.now();
       return;
     }
@@ -1402,6 +1405,7 @@ class FT8Modem {
     if (coarseCandidates.length === 0) {
       const onAir = this._framesInProgress(rows, kLo, binWidth, maxStart);
       this._rxBusy = onAir.length > 0;
+      this._setActivity(onAir.map(f => f.freq0));
       this._rxBusyAt = performance.now();
       if (onAir.length) console.log('[FT8 RX] trame en cours de réception à ' + onAir.map(f => f.freq0.toFixed(0)).join(', ') + ' Hz');
       console.log('[FT8 RX] no candidates (' + (t1 - t0 | 0) + 'ms spectre, ' + (t2 - t1 | 0) + 'ms recherche, RMS=' + rms.toFixed(4) + ')');
@@ -1421,6 +1425,7 @@ class FT8Modem {
     const NUM_FINE = 2;
 
     let stillOnAir = false, pendingTail = false;
+    const activeFreqs = []; // fréquences des trames encore à l'antenne (affichage des canaux)
     for (const coarse of coarseCandidates) {
       // A previous candidate of this pass (e.g. an extended frame) may cover it
       if (covered(coarse.sampleOff, coarse.freq0)) continue;
@@ -1486,9 +1491,9 @@ class FT8Modem {
         // complete; the receiver must not answer while the sender still talks.
         if (text !== null) {
           const cont = this._signalContinues(audio, sampleRate, nsps, spanEnd - frameLen, refinedFreq0);
-          if (cont === null) { retry = true; pendingTail = true; break; } // tail not captured yet: retry next pass
+          if (cont === null) { retry = true; pendingTail = true; activeFreqs.push(refinedFreq0); break; } // tail not captured yet: retry next pass
           frame.continues = cont;
-          if (cont) stillOnAir = true;
+          if (cont) { stillOnAir = true; activeFreqs.push(refinedFreq0); }
         } else {
           frame.continues = false;
         }
@@ -1497,6 +1502,8 @@ class FT8Modem {
         frame.absEnd = absStart + spanEnd;
         frame.sampleRate = sampleRate;
         frame.freq = refinedFreq0;
+        this._rxDecodedLog.push({ freq: refinedFreq0, t: performance.now() });
+        if (this._rxDecodedLog.length > 20) this._rxDecodedLog.shift();
         this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd, freq: refinedFreq0 });
 
         const elapsed = performance.now() - t0;
@@ -1542,8 +1549,10 @@ class FT8Modem {
 
     // Réception en cours : trame déjà décodée qui continue (étendu), trame finie dont la
     // traîne n'est pas captée, ou trame commencée mais pas finie (synchro partielle).
-    const onAir = stillOnAir || pendingTail ? [] : this._framesInProgress(rows, kLo, binWidth, maxStart);
+    // Toujours cherchées (affichage des canaux) : une autre station peut émettre pendant un étendu
+    const onAir = this._framesInProgress(rows, kLo, binWidth, maxStart);
     this._rxBusy = stillOnAir || pendingTail || onAir.length > 0;
+    this._setActivity(activeFreqs.concat(onAir.map(f => f.freq0)));
     this._rxBusyAt = performance.now();
     if (onAir.length) console.log('[FT8 RX] trame en cours de réception à ' + onAir.map(f => f.freq0.toFixed(0)).join(', ') + ' Hz');
   }
@@ -1592,6 +1601,24 @@ class FT8Modem {
       }
     }
     return found;
+  }
+
+  _setActivity(freqs) {
+    this._rxOnAir = freqs;
+    this._rxOnAirAt = performance.now();
+  }
+
+  /**
+   * Activité de réception pour l'affichage des canaux : fréquences (ton 0) des trames
+   * en train d'arriver (passe de moins de 6 s) et des trames décodées depuis `recentMs`.
+   */
+  rxActivity(recentMs = 4000) {
+    const now = performance.now();
+    const fresh = this.listening && !this.transmitting && this._rxOnAirAt && now - this._rxOnAirAt < 6000;
+    return {
+      onAir: fresh ? (this._rxOnAir || []).slice() : [],
+      decoded: (this._rxDecodedLog || []).filter(d => now - d.t < recentMs).map(d => d.freq),
+    };
   }
 
   /** Une trame est-elle en train d'arriver (décodage pas fini) ? Ne pas émettre par-dessus. */
@@ -1657,6 +1684,9 @@ class FT8Modem {
     this._coarseCache = new Map(); // ligne de départ absolue -> [{b, score}] (scores de synchro > 4)
     this._tried = new Map();       // 'ligne:b' -> ligne : case affinée sans succès, pas réessayée
     this._pendingFail = [];        // échecs forts en attente d'être « posés » (onUndecoded)
+    this._rxOnAir = [];            // fréquences des trames à l'antenne (dernière passe)
+    this._rxOnAirAt = 0;
+    this._rxDecodedLog = [];       // [{freq, t}] trames décodées récemment
     this._specKey = '';
   }
 

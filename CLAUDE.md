@@ -55,9 +55,15 @@ Application web PWA de communication texte par modulation sonore FT8 (8-GFSK).
 - Trame 1 d'un multi-trame perdue (`…` en tête), ou en-tête invalide (bloc 0 d'un étendu perdu :
   la suite commence au milieu du texte) → émetteur et destinataire `?`, texte précédé de `…`.
 - Les accusés portent l'indicatif court de la station qui accuse (11 bits) → « ✓✓ reçu par XY ».
-- **Annuaire** (paramètres → Importer) : fichier texte/CSV, `court;long` par ligne (`;` `,`
-  tabulation ou espaces, `#` commentaire, en-tête toléré, dernier doublon gagnant). Il est
-  stocké dans `localStorage` (`sonochat-directory`), et un import valide le remplace.
+- **Annuaire** (paramètres → Importer) : fichier texte/CSV, `court;long[;type[;échelon]]` par
+  ligne (`;` `,` tabulation ou espaces, `#` commentaire, en-tête toléré, dernier doublon gagnant).
+  Stocké dans `localStorage` (`sonochat-directory`, et `sonochat-directory-units` pour les types),
+  un import valide le remplace.
+- **Type d'unité OTAN** (`directory.js` : `UNIT_TYPES`, `ECHELONS`, `unitSidc`) : mot clé sans
+  accents (infanterie, blinde, genie, sante, transmissions, commandement, pompiers, samu, police,
+  secours…) ou SIDC APP-6 de 15 car. ; échelon (equipe → division) en position 12 du SIDC (pas sur
+  les symboles de secours `E`). Type inconnu : ignoré, l'entrée est gardée. La carte dessine les
+  unités (POSREP, position connue, moi) avec ce symbole ; bulle « Santé, Compagnie ».
 - Traduction **à l'affichage seulement** (`data-call` sur chaque indicatif, `refreshCalls`) :
   l'historique garde le code court, un annuaire importé plus tard s'applique aussi aux anciens
   messages. Code inconnu → code court affiché.

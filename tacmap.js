@@ -140,7 +140,10 @@
    * Tout ce que montre la carte, depuis l'historique.
    * @returns {{marks, tracks: {call: [[lat, lon]]}, units: {call: {lat, lon, t, lace}}}}
    */
-  function collect(history, now) {
+  /**
+   * @param {function(string): string|null} [unitSidc]  SIDC de la station d'après l'annuaire
+   */
+  function collect(history, now, unitSidc) {
     const marks = [], tracks = {}, units = {};
     for (const msg of history) {
       if (!msg || msg.status === 'incomplet' || !M.isFormatted(msg.text)) continue;
@@ -163,7 +166,7 @@
     for (const call of Object.keys(units)) {
       const u = units[call];
       if (u.lat === undefined) continue;
-      marks.push({ sidc: FRIEND, lat: u.lat, lon: u.lon, label: call, info: u.lace || 'dernière position', unit: call,
+      marks.push({ sidc: (unitSidc && unitSidc(call)) || FRIEND, lat: u.lat, lon: u.lon, label: call, info: u.lace || 'dernière position', unit: call,
         opacity: ageOpacity(u.age || 0), title: 'UNITÉ' });
     }
     return { marks, tracks, units };
@@ -356,7 +359,7 @@
     m.setView(start ? [start.lat, start.lon] : [46.6, 2.5], start ? 15 : 5);
     // Symboles déjà connus, pour se repérer
     const ref = L.layerGroup().addTo(m);
-    for (const s2 of collect(opts.history(), Date.now()).marks) {
+    for (const s2 of collect(opts.history(), Date.now(), opts.unitSidc).marks) {
       L.marker([s2.lat, s2.lon], { icon: icon(s2.sidc, s2.unit ? opts.callLabel(s2.unit) : s2.label, ''), opacity: 0.7, interactive: false }).addTo(ref);
     }
     const posEl = p.querySelector('.tm-pick-pos');
@@ -395,7 +398,7 @@
     if (!map || !me) return;
     const L = root.L;
     const call = opts.myCall() || 'MOI';
-    if (!meMarker) meMarker = L.marker([me.lat, me.lon], { icon: icon(FRIEND, call, 'moi'), zIndexOffset: 1000 }).addTo(map);
+    if (!meMarker) meMarker = L.marker([me.lat, me.lon], { icon: icon(opts.unitSidc(opts.myCall()) || FRIEND, call, 'moi'), zIndexOffset: 1000 }).addTo(map);
     else meMarker.setLatLng([me.lat, me.lon]);
   }
 
@@ -403,7 +406,7 @@
   function refresh(first) {
     if (!map) return;
     const L = root.L;
-    const { marks, tracks } = collect(opts.history(), Date.now());
+    const { marks, tracks } = collect(opts.history(), Date.now(), opts.unitSidc);
     symbols.clearLayers();
     tracksLayer.clearLayers();
     for (const call of Object.keys(tracks)) {
@@ -415,7 +418,8 @@
       const mk = L.marker([m.lat, m.lon], { icon: icon(m.sidc, label, m.info), opacity: m.opacity }).addTo(symbols);
       if (m.from) L.polyline([[m.from.lat, m.from.lon], [m.lat, m.lon]], { color: '#c62828', weight: 2, dashArray: '4 4', opacity: m.opacity }).addTo(symbols);
       const when = m.msg ? m.msg.time : '';
-      const html = `<b>${esc(m.title)}</b><br>${esc(label)}${when ? ' · ' + esc(when) : ''}<br>${esc(m.info)}`
+      const kind = m.unit && opts.unitLabel ? opts.unitLabel(m.unit) : '';
+      const html = `<b>${esc(m.title)}</b>${kind ? ' · ' + esc(kind) : ''}<br>${esc(label)}${when ? ' · ' + esc(when) : ''}<br>${esc(m.info)}`
         + (m.msg ? '<br><button type="button" class="tm-open">Fiche</button>' : '');
       mk.bindPopup(html);
       if (m.msg) mk.on('popupopen', (e) => {

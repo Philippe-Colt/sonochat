@@ -66,6 +66,7 @@
   let serialPort = null;
   const _rxBubbles = new Map(); // id de reception SonoLink -> { el, msg }
   let directory = {};           // annuaire : indicatif court -> indicatif long
+  let directoryUnits = {};      // annuaire : indicatif court -> {type (SIDC), echelon} pour la carte
 
   // === Init ===
   // Arrivee depuis l'ancienne adresse sonochat.f4mtx.com (legacy/index.html) :
@@ -76,7 +77,7 @@
     try {
       const b64 = decodeURIComponent(location.hash.slice('#migrate='.length));
       const data = JSON.parse(decodeURIComponent(escape(atob(b64))));
-      const KEYS = ['sonochat-settings', 'sonochat-directory', 'sonochat-history'];
+      const KEYS = ['sonochat-settings', 'sonochat-directory', 'sonochat-directory-units', 'sonochat-history'];
       for (const k of KEYS) {
         if (typeof data[k] === 'string' && localStorage.getItem(k) === null) {
           JSON.parse(data[k]); // valide avant d'ecrire
@@ -505,6 +506,13 @@
       myCall: myCallsign,
       callLabel: (c) => (c && c !== '?' ? displayCall(c) : '?'),
       station: () => ({ pos: loadSettings().stationPos }),
+      unitSidc: (c) => unitSidc(directoryUnits[c]),
+      unitLabel: (c) => {
+        const u = directoryUnits[c];
+        const t = u && UNIT_TYPES.find((x) => x.sidc === u.type);
+        const e = u && u.echelon && ECHELONS.find((x) => x.code === u.echelon);
+        return [t && t.label, e && e.label].filter(Boolean).join(', ');
+      },
       openViewer: (body, info) => MedevacUI.openViewer(body, info),
     });
     document.getElementById('btn-map').addEventListener('click', () => TacMap.open());
@@ -571,6 +579,7 @@
     btnDirectoryClear.addEventListener('click', () => {
       if (!Object.keys(directory).length || !confirm('Effacer l\'annuaire ?')) return;
       directory = {};
+      directoryUnits = {};
       saveDirectory();
       refreshCalls();
       updateDirectoryStatus();
@@ -1151,14 +1160,17 @@
     try {
       const saved = localStorage.getItem('sonochat-directory');
       directory = saved ? JSON.parse(saved) : {};
+      directoryUnits = JSON.parse(localStorage.getItem('sonochat-directory-units') || '{}');
     } catch {
       directory = {};
+      directoryUnits = {};
     }
   }
 
   function saveDirectory() {
     try {
       localStorage.setItem('sonochat-directory', JSON.stringify(directory));
+      localStorage.setItem('sonochat-directory-units', JSON.stringify(directoryUnits));
     } catch (e) {
       console.warn('Annuaire non enregistre:', e);
     }
@@ -1166,7 +1178,9 @@
 
   function updateDirectoryStatus(extra) {
     const n = Object.keys(directory).length;
-    directoryStatus.textContent = (n ? n + ' indicatif' + (n > 1 ? 's' : '') + ' dans l\'annuaire' : 'Annuaire vide')
+    const t = Object.keys(directoryUnits).length;
+    directoryStatus.textContent = (n ? n + ' indicatif' + (n > 1 ? 's' : '') + ' dans l\'annuaire'
+      + (t ? ', ' + t + ' avec type d\'unite' : '') : 'Annuaire vide')
       + (extra ? ' — ' + extra : '');
     btnDirectoryClear.disabled = n === 0;
   }
@@ -1188,7 +1202,9 @@
         return;
       }
       directory = r.map; // un import remplace l'annuaire
+      directoryUnits = r.units;
       saveDirectory();
+      TacMap.refresh();
       refreshCalls();
       updateDirectoryStatus(report);
     };

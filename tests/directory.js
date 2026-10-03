@@ -38,6 +38,22 @@ function check(name, cond, detail) {
   check('fichier quelconque : rien importé', r.imported === 0, r);
 }
 check('affichage : long si connu', lookupCall({ PC: 'F4MTX' }, 'PC') === 'F4MTX');
+{
+  const D = require('../directory.js');
+  const r = parseDirectory('PC;F4MTX;infanterie;section\nXY;F4XYZ;Pompiers\nZZ;F1ZZZ;SFGPUCE--------;compagnie\nK1;W1AW;Hiram;Maxim\nAB;F1ABC;génie;Régiment\nCD;F1CDE\n');
+  check('type et échelon : mots clés, accents, majuscules', r.units.PC.type === 'SFGPUCI--------' && r.units.PC.echelon === 'D'
+    && r.units.XY.type === 'EFOPC----------' && r.units.AB.type === 'SFGPUCE--------' && r.units.AB.echelon === 'G', r.units);
+  check('type en code SIDC accepté', r.units.ZZ.type === 'SFGPUCE--------' && r.units.ZZ.echelon === 'E', r.units.ZZ);
+  check('type inconnu ou absent : pas de type, entrée gardée', !r.units.K1 && !r.units.CD && r.map.K1 === 'W1AW' && r.imported === 6 && r.typed === 4, r);
+  check('SIDC avec échelon en position 12', D.unitSidc(r.units.PC) === 'SFGPUCI----D---' && D.unitSidc(r.units.XY) === 'EFOPC----------' && D.unitSidc(null) === null);
+  const ms = require('../milsymbol.js');
+  const bad = [];
+  for (const t of D.UNIT_TYPES) for (const e of [null].concat(D.ECHELONS.map((x) => x.code))) {
+    const c = D.unitSidc({ type: t.sidc, echelon: e });
+    if (!new ms.Symbol(c, { standard: 'APP6' }).isValid()) bad.push(c);
+  }
+  check(`${D.UNIT_TYPES.length} types × ${D.ECHELONS.length + 1} échelons : symboles APP-6 valides`, bad.length === 0, bad);
+}
 check('affichage : court sinon', lookupCall({ PC: 'F4MTX' }, 'AB') === 'AB' && lookupCall(null, 'AB') === 'AB');
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');

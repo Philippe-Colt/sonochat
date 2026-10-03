@@ -64,6 +64,8 @@ console.log('Historique → carte');
   check('LACE sur l\'unité', /LACE VORV · 3 blessés/.test(unit.info), unit.info);
   check('trajet des POSREP', c.tracks.PC.length === 2, c.tracks);
   check('message incomplet et texte libre ignorés', c.marks.length === 2, c.marks.map((m) => m.title));
+  const typed = T.collect(h, now, (call) => (call === 'PC' ? 'SFGPUCE----D---' : null));
+  check('unité dessinée avec le type de l\'annuaire (génie, section)', typed.marks.find((m) => m.unit === 'PC').sidc === 'SFGPUCE----D---');
   check('vieillissement : récent 100 %, 2 h 60 %, 7 h 30 %', T.ageOpacity(60e3) === 1 && T.ageOpacity(2 * 3600e3) === 0.6 && T.ageOpacity(7 * 3600e3) === 0.3);
 }
 

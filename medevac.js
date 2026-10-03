@@ -756,8 +756,12 @@
     return { lat: deg(lat), lon: (zone - 1) * 6 - 180 + 3 + deg(lon) };
   }
 
-  /** MGRS à 10 m près (8 chiffres), ex. « 31U DQ 4825 1193 » ; null hors UTM (pôles). */
-  function toMgrs(lat, lon) {
+  /**
+   * MGRS, ex. « 31U DQ 4825 1193 » (digits 4 : 10 m, défaut) ou « 31U DQ 48251 11930 »
+   * (digits 5 : 1 m) ; null hors UTM (pôles).
+   */
+  function toMgrs(lat, lon, digits) {
+    digits = digits || 4;
     if (!(lat >= -80 && lat < 84)) return null;
     const { zone, easting, northing } = toUtm(lat, lon);
     const band = BANDS[Math.min(19, Math.floor((lat + 80) / 8))];
@@ -765,8 +769,9 @@
     const col = COLS[(set + 2) % 3][Math.floor(easting / 100000) - 1];
     const rowOffset = zone % 2 === 0 ? 5 : 0;
     const row = ROWS[(Math.floor(northing / 100000) + rowOffset) % 20];
-    const e = String(Math.floor(easting % 100000 / 10)).padStart(4, '0');
-    const n = String(Math.floor(northing % 100000 / 10)).padStart(4, '0');
+    const div = Math.pow(10, 5 - digits);
+    const e = String(Math.floor(easting % 100000 / div)).padStart(digits, '0');
+    const n = String(Math.floor(northing % 100000 / div)).padStart(digits, '0');
     return `${zone}${band} ${col}${row} ${e} ${n}`;
   }
 

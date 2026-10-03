@@ -171,7 +171,10 @@ CONTACT → hostile/tireur/IED **projeté** (position + azimut + distance, trait
 l'observateur), UXO → UXO/IED/mine, POSREP → unité amie à sa dernière position (+ **trajet**),
 LACE → état sur l'unité, moi → GPS. Codes SIDC choisis sur planche et validés (`isValid`,
 tests). **Vieillissement** : 100 % < 1 h, 60 % < 6 h, 30 % au-delà. **Carroyage MGRS** 100 km /
-10 km / 1 km selon le zoom (`gridLines`, `toUtm`/`fromUtm` de `medevac.js`).
+10 km / 1 km selon le zoom (`gridLines`, `toUtm`/`fromUtm` de `medevac.js`), identifiant **dans
+chaque carré** en permanence (`gridCells` : « 31U DQ », « DQ 5 1 », « DQ 52 11 » ; carrés de la zone
+UTM voisine non étiquetés). En haut à droite : **coordonnée complète** du centre (petite mire),
+MGRS au mètre (`toMgrs(lat, lon, 5)`) + degrés, mise à jour en direct.
 
 **Pointer une position** (`TacMap.pickPosition`) : bouton **CARTE** dans chaque écran de position
 des messages (`positionWidget` de `medevac-ui.js`) et pour la position de la station

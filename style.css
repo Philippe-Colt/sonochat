@@ -1411,3 +1411,31 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 
 .tm-mapwrap { position: relative; flex: 1; min-height: 0; }
 .tm-mapwrap .tm-map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+
+/* Carte tactique : coordonnée complète du centre (haut à droite) et sa mire */
+.tm-coord {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  font: 12px/1.3 sans-serif;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.tm-coord b { font-size: 14px; letter-spacing: 0.02em; }
+.tm-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  z-index: 650;
+  pointer-events: none;
+  background:
+    linear-gradient(#0d47a1, #0d47a1) center / 2px 100% no-repeat,
+    linear-gradient(#0d47a1, #0d47a1) center / 100% 2px no-repeat;
+  opacity: 0.8;
+}
+.tm-grid-lbl { font-size: 10px; opacity: 0.9; }

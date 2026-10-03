@@ -216,7 +216,41 @@
     return lines;
   }
 
-  const Core = { symbolsFor, collect, destinationPoint, ageOpacity, gridLines, gridStep, METHANE_SIDC, NATURE_SIDC, CONTACT_SIDC, UXO_SIDC, FRIEND };
+  /**
+   * Identifiant MGRS de chaque carré visible, posé dans son coin sud-ouest :
+   * « 31U DQ » (100 km), « DQ 5 1 » (10 km), « DQ 52 11 » (1 km).
+   * @returns {Array<{lat, lon, label}>}  vide si trop de carrés
+   */
+  function gridCells(south, west, north, east, zoom) {
+    const step = gridStep(zoom);
+    const cLat = (south + north) / 2, cLon = (west + east) / 2;
+    if (cLat < -80 || cLat >= 84) return [];
+    const zone = M.utmZone(cLat, cLon);
+    const sh = cLat < 0;
+    const corners = [[south, west], [south, east], [north, west], [north, east]].map(([la, lo]) => M.toUtm(la, lo, zone));
+    const e0 = Math.floor(Math.min.apply(null, corners.map((c) => c.easting)) / step) * step;
+    const e1 = Math.max.apply(null, corners.map((c) => c.easting));
+    const n0 = Math.floor(Math.min.apply(null, corners.map((c) => c.northing)) / step) * step;
+    const n1 = Math.max.apply(null, corners.map((c) => c.northing));
+    if (((e1 - e0) / step) * ((n1 - n0) / step) > 300) return [];
+    const digits = step === 1000 ? 2 : 1;
+    const out = [];
+    for (let e = e0; e < e1; e += step) {
+      for (let n = n0; n < n1; n += step) {
+        const c = M.fromUtm(zone, e + step / 2, n + step / 2, sh);   // centre : bonne lettre de carré
+        if (M.utmZone(c.lat, c.lon) !== zone) continue;              // carré de la zone voisine : grille non tracée
+        const sw = M.fromUtm(zone, e, n, sh);
+        const m = M.toMgrs(c.lat, c.lon, 5);
+        if (!m) continue;
+        const [gzd, sq, ee, nn] = m.split(' ');
+        const label = step === 100000 ? gzd + ' ' + sq : sq + ' ' + ee.slice(0, digits) + ' ' + nn.slice(0, digits);
+        out.push({ lat: sw.lat, lon: sw.lon, label });
+      }
+    }
+    return out;
+  }
+
+  const Core = { symbolsFor, collect, destinationPoint, ageOpacity, gridLines, gridCells, gridStep, METHANE_SIDC, NATURE_SIDC, CONTACT_SIDC, UXO_SIDC, FRIEND };
   if (typeof module === 'object' && module.exports) { module.exports = Core; return; }
 
   // ============================================================
@@ -224,7 +258,7 @@
   // ============================================================
 
   let opts = null, overlay = null, map = null, symbols = null, tracksLayer = null, gridLayer = null, meMarker = null;
-  let gridOn = true, watchId = null, me = null, world = null, dl = null;
+  let gridOn = true, watchId = null, me = null, world = null, dl = null, coordCtl = null;
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function init(o) { opts = o; }
@@ -255,6 +289,13 @@
         <div class="tm-panel hidden" id="tm-panel"></div>`;
       document.body.appendChild(overlay);
       map = baseMap(overlay.querySelector('#tm-map'));
+      // Coordonnée complète (MGRS au mètre + degrés) du centre, en haut à droite
+      const Coord = L.Control.extend({ onAdd: () => { const d = L.DomUtil.create('div', 'tm-coord'); L.DomEvent.disableClickPropagation(d); return d; } });
+      coordCtl = new Coord({ position: 'topright' }).addTo(map);
+      const centerMark = document.createElement('div');
+      centerMark.className = 'tm-center';
+      overlay.querySelector('#tm-map').appendChild(centerMark);
+      map.on('move', showCoord);
       tracksLayer = L.layerGroup().addTo(map);
       gridLayer = L.layerGroup().addTo(map);
       symbols = L.layerGroup().addTo(map);
@@ -396,16 +437,28 @@
     drawMe();
   }
 
+  function showCoord() {
+    if (!coordCtl) return;
+    const c = map.getCenter();
+    const lon = ((c.lng + 540) % 360) - 180;
+    const m = root.Medevac.toMgrs(c.lat, lon, 5);
+    coordCtl.getContainer().innerHTML = (m ? `<b>${esc(m)}</b><br>` : '') + esc(root.Medevac.formatLatLon(c.lat, lon));
+  }
+
   function drawGrid() {
+    showCoord();
     if (!gridLayer) return;
     gridLayer.clearLayers();
     overlay.querySelector('[data-act="grid"]').classList.toggle('on', gridOn);
     if (!gridOn) return;
     const L = root.L, b = map.getBounds();
-    for (const ln of gridLines(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom())) {
+    const box = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom()];
+    for (const ln of gridLines.apply(null, box)) {
       L.polyline(ln.pts, { color: '#0d47a1', weight: 1, opacity: 0.55, interactive: false }).addTo(gridLayer);
-      const at = ln.kind === 'e' ? ln.pts[ln.pts.length - 1] : ln.pts[0];
-      L.marker(at, { interactive: false, icon: L.divIcon({ className: 'tm-grid-lbl ' + ln.kind, html: ln.label, iconSize: null }) }).addTo(gridLayer);
+    }
+    // Identifiant MGRS dans chaque carré, en permanence
+    for (const c of gridCells.apply(null, box)) {
+      L.marker([c.lat, c.lon], { interactive: false, icon: L.divIcon({ className: 'tm-grid-lbl', html: c.label, iconSize: null, iconAnchor: [-3, 16] }) }).addTo(gridLayer);
     }
   }
 

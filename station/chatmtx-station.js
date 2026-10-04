@@ -110,6 +110,11 @@ async function connectPupitre() {
       if (m.type === 'state') {
         const was = rig.state && rig.state.present;
         rig.state = { ...(rig.state || {}), ...m };
+        // Pendant l'émission : maximum des instruments du poste (preuve que la BF module)
+        if (rig.ptt && rig.meters) {
+          for (const k of ['po', 'alc', 'swr']) if (typeof m[k] === 'number') rig.meters[k] = Math.max(rig.meters[k] || 0, m[k]);
+          if (m.mode) rig.meters.mode = m.mode;
+        }
         if ('present' in m && m.present !== was) log(m.present ? 'poste joint par le pupitre' : 'poste NON joint par le pupitre (CI-V)');
       }
     } catch (e) { /* ignoré */ }
@@ -155,6 +160,7 @@ function ptt(on, why) {
     sendState({ action: 'ptt', on: true });
     rig.ptt = true;
     rig.pttSince = Date.now();
+    rig.meters = { mode: rig.state && rig.state.mode };
     rig.pttTimer = setTimeout(() => { log('PTT : 130 s, relâché d\'office'); ptt(false, 'minuteur'); }, PTT_MAX_MS);
     log('PTT ON' + (why ? ' (' + why + ')' : ''));
   } else if (!on && rig.ptt) {
@@ -164,7 +170,11 @@ function ptt(on, why) {
     const tx = rig.txWs;
     rig.txWs = null;
     if (tx) setTimeout(() => tx.close(), 200); // fermer le canal fait aussi retomber l'alternat
-    log('PTT OFF' + (why ? ' (' + why + ')' : '') + ' après ' + ((Date.now() - rig.pttSince) / 1000).toFixed(1) + ' s');
+    const mt = rig.meters || {};
+    log('PTT OFF' + (why ? ' (' + why + ')' : '') + ' après ' + ((Date.now() - rig.pttSince) / 1000).toFixed(1) + ' s · mode '
+      + (mt.mode || '?') + ' · Po max ' + (mt.po !== undefined ? mt.po : '?') + ' · ALC max ' + (mt.alc !== undefined ? mt.alc : '?')
+      + ' · ROS max ' + (mt.swr !== undefined ? mt.swr : '?')
+      + (mt.po === 0 ? ' — AUCUNE PUISSANCE : mode, source de modulation (DATA MOD = USB) ou niveau USB MOD à vérifier' : ''));
   }
 }
 

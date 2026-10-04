@@ -647,6 +647,15 @@
     return /^[/?][0-9A-Z]/.test(body || '') && (body[1] in FORMATS || body[1] === '9' || body[1] === 'M' || body[1] === 'A');
   }
 
+  /**
+   * Formats collationnés (le destinataire renvoie ce qu'il a reçu) : 9-line MEDEVAC, MIST,
+   * AT-MIST et METHANE seulement. Les autres ne reçoivent que l'accusé de réception.
+   */
+  const READBACK_MARKERS = '9MAE';
+  function needsReadback(body) {
+    return isFormatted(body) && READBACK_MARKERS.indexOf(body[1]) >= 0;
+  }
+
   /** Format qui déclenche l'alerte chez le destinataire, dès l'en-tête : son titre, sinon null. */
   function alertTitle(body) {
     if (!/^\/[0-9A-Z]/.test(body || '')) return null;
@@ -934,7 +943,7 @@
     MAX_ATMIST, MAX_ATMIST_WITH_NINE, roundFreq, FORMATS, FAMILIES, fieldsLen, alertTitle, isAtMist, SEX, HEMO, COLORS,
     PRECEDENCE, EQUIPMENT, SECURITY, WOUNDS, MARKING, NATIONALITY, NBC, TERRAIN,
     MECHANISM, REGIONS, AVPU, TREATMENT,
-    encode, decode, isFormatted, encodeNine, decodeNine, encodeMist, decodeMist,
+    encode, decode, isFormatted, needsReadback, READBACK_MARKERS, encodeNine, decodeNine, encodeMist, decodeMist,
     toMgrs, fromMgrs, parsePosition, toUtm, fromUtm, utmZone, formatLatLon, formatFreq, lines, toText, diff, normalizeRemark,
   };
   if (typeof module === 'object' && module.exports) module.exports = Medevac;

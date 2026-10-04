@@ -226,7 +226,10 @@ puis remarque libre facultative (≤ 128 car. au total)
   (paramètres, MGRS ou degrés). Ligne 2 : fréquence de contact (paramètres) + indicatif de
   l'émetteur. Lignes 6 et 9 : variante guerre (sécurité, NRBC) ou paix (blessures, terrain).
 - Toujours en **étendu**, vers un **destinataire précis** (jamais `99`, choisi en tête de la
-  saisie). Le destinataire accuse, puis **renvoie** le message avec `?`, adressé à l'émetteur
+  saisie). Le destinataire accuse. **Collationnement seulement pour 9-line MEDEVAC, MIST, AT-MIST
+  et METHANE** (`needsReadback`, `READBACK_MARKERS` `9MAE`) ; les autres formats (renseignement,
+  SALUTE, CONTACT, UXO, LACE, POSREP) n'ont que l'accusé. Pour les premiers, le destinataire
+  **renvoie** le message avec `?`, adressé à l'émetteur
   (`onFormattedRx`, une fois par message en 15 min, 2 s après son accusé) ; l'émetteur compare
   (`checkReadback`) → « Collationné conforme par XY » ou les lignes qui diffèrent (`msg.readback`),
   et accuse le collationnement (« ✓✓ reçu par PC » chez le destinataire). Les stations non

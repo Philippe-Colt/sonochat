@@ -653,7 +653,9 @@ async function scenario(title, fn) {
       const tx = txLog.find((x) => x.from === 'PC');
       const nb = tx.kind === 'ext' ? tx.text.split('|').length : 1;
       check(`envoyé en ${blocks} bloc${blocks > 1 ? 's' : ''}`, nb === blocks, tx);
-      check('confirmé par XY et collationné conforme', /recu par F4XYZ/.test(sent.status) && /Collationné conforme/.test(sent.rb), sent);
+      if (marker === 'E') check('confirmé par XY et collationné conforme', /recu par F4XYZ/.test(sent.status) && /Collationné conforme/.test(sent.rb), sent);
+      else check('confirmé par XY, accusé seulement : pas de collationnement', /recu par F4XYZ/.test(sent.status) && !sent.rb
+        && txLog.filter((x) => x.from === 'XY').every((x) => x.type === 'ack'), [sent, txLog.filter((x) => x.from === 'XY')]);
       check(`XY : carte ${title}`, got && got.text.startsWith('[' + title + ']'), got && got.text);
       check(alert ? 'XY en alerte « ALERTE ' + title + ' »' : 'pas d\'alerte', alert
         ? xy.alert && (await pages.XY.textContent('#medevac-alert-title')) === 'ALERTE ' + title : !xy.alert, xy.alert);

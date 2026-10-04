@@ -178,6 +178,9 @@ console.log('Formats déclarés');
   check('isFormatted : marqueurs connus seulement', M.isFormatted('/E1') && M.isFormatted('?L1') && !M.isFormatted('/ZZZ') && !M.isFormatted('/7AB'));
   const m1 = M.decode(M.encode({ fmt: 'E', data: { major: 0, pos: { lat: 45, lon: 5 }, type: 4, hazards: [0], access: [1], ua: 2, ur: 5, imp: 10, dcd: 0, onsite: [0], need: [1, 3] } }));
   const m2 = M.decode(M.encode({ fmt: 'E', data: { ...m1.data, ua: 3 } }));
+  check('collationnement seulement pour 9-line, MIST, AT-MIST, METHANE', M.needsReadback('/9ABC') && M.needsReadback('/MXYZ')
+    && M.needsReadback('/AXYZ') && M.needsReadback('/EXYZ') && !['S', 'K', 'U', 'L', 'P', 'R'].some((c) => M.needsReadback('/' + c + 'XYZ'))
+    && !M.needsReadback('BONJOUR'));
   check('METHANE : collationnement, ligne N différente', JSON.stringify(M.diff(m1, m2)) === JSON.stringify(['N']), M.diff(m1, m2));
   check('METHANE : texte en clair', /^METHANE/.test(M.toText(m1, 'PC')) && /N · Victimes : UA2 UR5 I10 D0/.test(M.toText(m1, 'PC')), M.toText(m1, 'PC'));
 }

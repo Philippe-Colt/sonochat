@@ -271,7 +271,7 @@
   }
 
   // === Messages formates : 9-line MEDEVAC et MIST (medevac.js, medevac-ui.js) ===
-  // Toujours en etendu, avec accuse. Le recepteur renvoie ensuite ce qu'il a recu
+  // Toujours en etendu, avec accuse. 9-line, MIST et METHANE : le recepteur renvoie ensuite ce qu'il a recu
   // (marqueur ? au lieu de /) : l'emetteur compare et affiche « collationne conforme »
   // ou les lignes qui different.
   const READBACK_DELAY_MS = 2000;      // apres notre accuse, avant le collationnement
@@ -356,6 +356,8 @@
       checkReadback(dec, body, call);
       return;
     }
+    // 9-line, MIST, AT-MIST et METHANE seulement : les autres formats n'ont que l'accusé
+    if (!Medevac.needsReadback(body)) return;
     // Collationnement : une fois par message, apres notre accuse (sinon on le couvrirait)
     const now = Date.now();
     if (now - (_readbackDone.get(body) || 0) < READBACK_WINDOW_MS) return;

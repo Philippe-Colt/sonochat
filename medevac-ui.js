@@ -97,7 +97,7 @@
     const btn = (e) => `<button type="button" class="mv-big${e.red ? ' mv-red' : ''}" data-act="${e.act}"><b>${esc(e.title)}</b><span>${esc(e.desc)}</span></button>`;
     renderFrame({
       title: 'Messages formatés',
-      sub: 'Envoyés en une fois, accusé de réception et collationnement du destinataire',
+      sub: 'Envoyés en une fois avec accusé de réception ; collationnement pour 9-line, MIST et METHANE',
       body: `<div class="mv-grid mv-grid-1">
         <button type="button" class="mv-big${st.to ? '' : ' mv-red'}" data-act="to"><b>${st.to ? 'TO ' + esc(opts.callLabel(st.to)) : 'TO ?'}</b><span>${st.to ? 'Destinataire (toucher pour changer)' : 'Choisir le destinataire'}</span></button>
       </div>
@@ -627,8 +627,10 @@
 
   function sizeText(onAir) {
     const blocks = Math.ceil(onAir / 13);
+    const rb = M.needsReadback(M.encode(currentMessage()));
     return `${onAir} caractères · ${blocks} bloc${blocks > 1 ? 's' : ''} · environ ${Math.round(blocks * 11.5 + 1)} s · `
-      + `${13 * blocks - onAir} car. libres avant un bloc de plus · accusé de réception et collationnement par le destinataire`;
+      + `${13 * blocks - onAir} car. libres avant un bloc de plus · accusé de réception`
+      + (rb ? ' et collationnement par le destinataire' : ' du destinataire');
   }
 
   function recapStep() {

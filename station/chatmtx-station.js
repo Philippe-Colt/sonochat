@@ -30,6 +30,43 @@ const NO_TX = process.env.NO_TX === '1';
 // est enregistré dans ce WAV (12 kHz) pour être décodé hors ligne
 const TX_WAV = NO_TX && process.env.SELFTEST === '1' ? (process.env.TX_WAV || '/tmp/chatmtx-station-tx.wav') : null;
 const txRecord = [];
+// Chaque émission réelle est enregistrée telle qu'envoyée au pupitre (donc au poste), mesurée et
+// décodée par ChatMTX : preuve de la BF qui part ; les 5 dernières sont gardées
+const TX_DIR = path.join(os.homedir(), '.local', 'share', 'chatmtx-station', 'emissions');
+let txSent = [];
+
+/** Décode un enregistrement 12 kHz avec le modem du dépôt : textes trouvés. */
+async function decodeRecording(frames) {
+  const vm = require('vm');
+  const ctx = { console: { log() {}, error() {}, warn() {} }, performance, setTimeout, clearTimeout, Math, Float32Array, Float64Array,
+    Uint32Array, Uint8Array, Int32Array, Int8Array, Uint16Array, Int16Array, Array, Set, Map, Object, String, Number, Promise, Date, Infinity, NaN, isNaN, parseInt, BigInt };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'ft8-modem.js'), 'utf8') + ';this.FT8Modem=FT8Modem;', ctx);
+  const pcm = Buffer.concat(frames), n = pcm.length >> 1, SR = 12000, nsps = 1920;
+  const L = n + SR * 4, buf = new Float32Array(L);
+  for (let i = 0; i < n; i++) buf[SR * 2 + i] = pcm.readInt16LE(i * 2) / 32768;
+  const m = new ctx.FT8Modem({ baseFreq: 1000 });
+  Object.assign(m, { _sampleRate: SR, _nsps: nsps, _ringBuffer: buf, _ringBufferLen: L, _ringWritePos: 0, listening: true });
+  m._resetRxState(); m._absWritten = L; m._toneWindow = new Float32Array(nsps).fill(1);
+  const got = [];
+  m.onFrame = (f) => got.push((f.text || f.ham || ('télémétrie ' + f.telemetry)) + ' @' + Math.round(f.freq) + ' Hz');
+  await m._attemptDecode();
+  return got;
+}
+
+async function checkEmission(frames) {
+  if (!frames.length) return;
+  let pk = 0, sq = 0, n = 0;
+  for (const f of frames) for (let i = 0; i + 1 < f.length; i += 2) { const v = f.readInt16LE(i) / 32768; pk = Math.max(pk, Math.abs(v)); sq += v * v; n++; }
+  fs.mkdirSync(TX_DIR, { recursive: true });
+  const file = path.join(TX_DIR, 'emission-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.wav');
+  writeWav(file, frames, 12000);
+  const old = fs.readdirSync(TX_DIR).sort();
+  for (const f of old.slice(0, Math.max(0, old.length - 5))) fs.unlinkSync(path.join(TX_DIR, f));
+  const dec = await decodeRecording(frames).catch((e) => ['erreur : ' + e.message]);
+  log('BF envoyée au poste : ' + (n / 12000).toFixed(2) + ' s, crête ' + (20 * Math.log10(pk + 1e-9)).toFixed(1) + ' dBFS, efficace '
+    + (10 * Math.log10(sq / n + 1e-12)).toFixed(1) + ' dBFS · décodée : ' + (dec.length ? dec.join(' | ') : 'RIEN') + ' · ' + file);
+}
 
 function writeWav(file, frames, rate) {
   const pcm = Buffer.concat(frames), b = Buffer.alloc(44);
@@ -161,6 +198,7 @@ function ptt(on, why) {
     rig.ptt = true;
     rig.pttSince = Date.now();
     rig.meters = { mode: rig.state && rig.state.mode };
+    txSent = [];
     rig.pttTimer = setTimeout(() => { log('PTT : 130 s, relâché d\'office'); ptt(false, 'minuteur'); }, PTT_MAX_MS);
     log('PTT ON' + (why ? ' (' + why + ')' : ''));
   } else if (!on && rig.ptt) {
@@ -171,6 +209,9 @@ function ptt(on, why) {
     rig.txWs = null;
     if (tx) setTimeout(() => tx.close(), 200); // fermer le canal fait aussi retomber l'alternat
     const mt = rig.meters || {};
+    const sent = txSent;
+    txSent = [];
+    setTimeout(() => checkEmission(sent), 100);
     log('PTT OFF' + (why ? ' (' + why + ')' : '') + ' après ' + ((Date.now() - rig.pttSince) / 1000).toFixed(1) + ' s · mode '
       + (mt.mode || '?') + ' · Po max ' + (mt.po !== undefined ? mt.po : '?') + ' · ALC max ' + (mt.alc !== undefined ? mt.alc : '?')
       + ' · ROS max ' + (mt.swr !== undefined ? mt.swr : '?')
@@ -194,7 +235,7 @@ function txPump() {
   }
   while (txNext <= now && txQueue.length) {
     const f = txQueue.shift();
-    if (rig.txWs && rig.txWs.readyState === 1) { rig.txWs.send(f); stats.txFrames++; }
+    if (rig.txWs && rig.txWs.readyState === 1) { rig.txWs.send(f); stats.txFrames++; txSent.push(Buffer.from(f)); }
     txNext += 10;
   }
   if (txNext < now - 50) txNext = now; // retard de livraison : on reprend la cadence
@@ -367,6 +408,86 @@ function initScript(port) {
   }, 100);
 }
 
+// ---------------- Écran partagé (ChatMTX distant, par le pupitre) ----------------
+// Serveur local seulement : le pupitre (telec-icom, /ws/chatmtx) authentifie les comptes et s'y
+// relaie en indiquant « control=1 » pour ceux qui ont le droit d'émettre. Image : capture CDP de
+// la page, 5 images/s au plus, partagée, arrêtée sans spectateur. Entrées : coordonnées 0-1.
+const SCREEN_PORT = +(process.env.SCREEN_PORT || 8791);
+const SCREEN_FPS_MS = 200;
+const KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+function startScreen(page) {
+  const clients = new Set();
+  let cdp = null, casting = false, last = 0, pending = null, timer = null, size = { w: 480, h: 900 }, lastActor = '', lastActAt = 0;
+  const broadcast = (msg) => { const t = JSON.stringify(msg); for (const c of clients) if (c.readyState === 1) c.send(t); };
+  const sendFrame = (f) => { last = Date.now(); pending = null; broadcast(f); };
+  async function start() {
+    if (casting) return;
+    casting = true;
+    try {
+      cdp = cdp || await page.context().newCDPSession(page);
+      cdp.removeAllListeners('Page.screencastFrame');
+      cdp.on('Page.screencastFrame', ({ data, metadata, sessionId }) => {
+        cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+        size = { w: metadata.deviceWidth, h: metadata.deviceHeight };
+        const f = { t: 'frame', data, w: size.w, h: size.h };
+        const wait = SCREEN_FPS_MS - (Date.now() - last);
+        if (wait <= 0) sendFrame(f);
+        else { pending = f; if (!timer) timer = setTimeout(() => { timer = null; if (pending) sendFrame(pending); }, wait); }
+      });
+      await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, everyNthFrame: 1 });
+    } catch (e) { casting = false; log('écran partagé : ' + e.message); }
+  }
+  async function stop() {
+    if (!casting) return;
+    casting = false;
+    if (cdp) await cdp.send('Page.stopScreencast').catch(() => {});
+  }
+  async function snapshot(sock) { // image immédiate : une page immobile ne produit pas d'image
+    try {
+      const vp = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }));
+      const data = (await page.screenshot({ type: 'jpeg', quality: 60 })).toString('base64');
+      if (sock.readyState === 1) sock.send(JSON.stringify({ t: 'frame', data, w: vp.w, h: vp.h }));
+    } catch (e) { /* page en rechargement */ }
+  }
+  async function input(sock, d) {
+    let m;
+    try { m = JSON.parse(d.toString()); } catch (e) { return; }
+    if (!sock.control) return; // le pupitre ne relaie pas les entrées sans droit d'émettre ; double garde
+    if (Date.now() - lastActAt > 30000 || lastActor !== sock.who) log('ChatMTX distant : ' + sock.who + ' agit sur la station');
+    lastActor = sock.who; lastActAt = Date.now();
+    const X = (v) => Math.max(0, Math.min(1, +v || 0)) * size.w, Y = (v) => Math.max(0, Math.min(1, +v || 0)) * size.h;
+    try {
+      if (m.t === 'tap') await page.mouse.click(X(m.x), Y(m.y));
+      else if (m.t === 'down') { await page.mouse.move(X(m.x), Y(m.y)); await page.mouse.down(); }
+      else if (m.t === 'move') await page.mouse.move(X(m.x), Y(m.y));
+      else if (m.t === 'up') { await page.mouse.move(X(m.x), Y(m.y)); await page.mouse.up(); }
+      else if (m.t === 'wheel') { await page.mouse.move(X(m.x), Y(m.y)); await page.mouse.wheel(0, Math.max(-2000, Math.min(2000, +m.dy || 0))); }
+      else if (m.t === 'text' && typeof m.s === 'string') await page.keyboard.insertText(m.s.slice(0, 200));
+      else if (m.t === 'key' && KEYS.has(m.k)) await page.keyboard.press(m.k);
+    } catch (e) { /* page en rechargement */ }
+  }
+  const srv = new WebSocket.Server({ host: '127.0.0.1', port: SCREEN_PORT });
+  srv.on('connection', (sock, req) => {
+    const q = new URL(req.url, 'http://local').searchParams;
+    sock.control = q.get('control') === '1';
+    sock.who = (q.get('user') || '?').slice(0, 80);
+    clients.add(sock);
+    log('ChatMTX distant : ' + sock.who + ' connecté (' + (sock.control ? 'contrôle' : 'lecture seule') + ', ' + clients.size + ' spectateur(s))');
+    snapshot(sock);
+    start();
+    sock.on('message', (d) => input(sock, d));
+    sock.on('close', () => {
+      clients.delete(sock);
+      log('ChatMTX distant : ' + sock.who + ' déconnecté');
+      if (!clients.size) stop();
+    });
+    sock.on('error', () => {});
+  });
+  srv.on('error', (e) => log('écran partagé indisponible : ' + e.message));
+  page.on('load', () => { if (casting) { casting = false; start(); } }); // rechargement : capture relancée
+}
+
 async function autoListen(page) {
   try {
     await page.waitForSelector('#btn-listen', { timeout: 30000 });
@@ -410,6 +531,7 @@ async function cacheName() {
   page.on('pageerror', (e) => log('erreur page :', e.message));
   page.on('crash', () => { log('page plantée : PTT relâché, rechargement'); ptt(false, 'plantage'); page.reload().catch(() => {}); });
   page.on('load', () => autoListen(page));
+  startScreen(page);
   ctx.on('close', () => { ptt(false, 'fenêtre fermée'); setTimeout(() => process.exit(0), 300); });
   await page.goto(URL_APP);
   if (TX_WAV) {

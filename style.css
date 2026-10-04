@@ -1555,3 +1555,8 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 #auto-bar > span { margin-right: 10px; }
 #auto-next.live { color: var(--accent, #e94560); font-weight: 700; animation: tx-live 1s ease-in-out infinite; }
 #auto-next.warn { color: #f39c12; }
+
+/* FT8 radioamateur : texte brut, discret, à gauche */
+.message.ham { opacity: 0.85; border-left: 3px solid #5d8aa8; font-family: monospace; }
+.message.ham .msg-text { letter-spacing: 0.02em; }
+body.hide-ham .message.ham { display: none; }

@@ -23,6 +23,7 @@
   const settingVolume = document.getElementById('setting-volume');
   const settingBaseFreq = document.getElementById('setting-base-freq');
   const settingRxMode = document.getElementById('setting-rx-mode');
+  const settingShowHam = document.getElementById('setting-show-ham');
   const volumeVal = document.getElementById('volume-val');
   const btnClearHistory = document.getElementById('btn-clear-history');
 
@@ -164,7 +165,10 @@
       channelBusy: () => modem.channelBusy(),
       log: (m) => console.log('[LINK] ' + m),
     });
-    modem.onFrame = (frame) => link.handleFrame(frame);
+    // FT8 radioamateur (messages standard) : affiché tel quel, jamais traité par SonoLink
+    // Le texte libre reste à SonoLink : sans en-tête, il ne se distingue pas d'un fragment
+    // d'étendu ChatMTX (bloc 0 perdu) qu'une répétition doit remplacer
+    modem.onFrame = (frame) => (frame.ham ? onHamFrame(frame) : link.handleFrame(frame));
     link.onBeacon = (ev) => {
       storePosition(ev.call, ev.lat, ev.lon, Date.now());
       lastRxBeacon = { call: ev.call, t: Date.now() };
@@ -737,6 +741,12 @@
     volumeVal.textContent = settings.volume + '%';
     settingBaseFreq.value = settings.baseFreq;
     settingRxMode.value = settings.rxMode === 'single' ? 'single' : 'multi';
+    settingShowHam.checked = settings.showHam !== false;
+    document.body.classList.toggle('hide-ham', !settingShowHam.checked);
+    settingShowHam.addEventListener('change', () => {
+      saveAndApplySettings();
+      document.body.classList.toggle('hide-ham', !settingShowHam.checked);
+    });
     settingRxMode.addEventListener('change', () => {
       if (modem.transmitting || link.busy) {
         alert('Emission en cours : changer de mode a la fin de l\'envoi.');
@@ -961,6 +971,35 @@
     return msgEl;
   }
 
+  // === FT8 radioamateur : texte tel qu'on le reçoit (« CQ F4ABC JN18 », « F4ABC K1XYZ -12 ») ===
+  const HAM_KEEP = 200; // trames FT8 gardées dans l'historique (une bande chargée en donne ~15 / 15 s)
+
+  function hamEl(msg) {
+    const el = document.createElement('div');
+    el.className = 'message received ham';
+    el.innerHTML = '<div class="msg-text"></div><div class="msg-meta">' + escapeHtml(msg.time)
+      + ' <span class="rx-source">FT8 radioamateur</span>' + (msg.freq ? ' · ' + Math.round(msg.freq) + ' Hz' : '') + '</div>';
+    el.querySelector('.msg-text').textContent = msg.text;
+    el._msg = msg;
+    return el;
+  }
+
+  function onHamFrame(frame) {
+    if (loadSettings().showHam === false) return;
+    const now = new Date();
+    const msg = { type: 'ham', text: frame.ham, freq: frame.freq, time: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }), timestamp: now.getTime() };
+    history.push(msg);
+    let n = history.reduce((k, m) => k + (m.type === 'ham'), 0);
+    while (n > HAM_KEEP) { const i = history.findIndex((m) => m.type === 'ham'); history.splice(i, 1); n--; }
+    saveHistory();
+    const sysMsg = messagesEl.querySelector('.system-msg');
+    if (sysMsg) sysMsg.remove();
+    messagesEl.appendChild(hamEl(msg));
+    const old = messagesEl.querySelectorAll('.message.ham');
+    for (let i = 0; i < old.length - HAM_KEEP; i++) old[i].remove();
+    scrollToBottom();
+  }
+
   function renderHistory() {
     messagesEl.innerHTML = '';
 
@@ -977,6 +1016,7 @@
     }
 
     history.forEach(msg => {
+      if (msg.type === 'ham') { messagesEl.appendChild(hamEl(msg)); return; }
       const msgEl = document.createElement('div');
       msgEl.className = `message ${msg.type}`;
       const status = msg.status ? ` <span class="link-status">${txStatusHtml(msg.status, msg.ackBy)}</span>` : '';
@@ -1428,7 +1468,7 @@
 
   // === Settings ===
   function loadSettings() {
-    const defaults = { rxMode: 'multi', volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', beaconOn: false, beaconMin: 10, beaconM: 500, pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
+    const defaults = { showHam: true, rxMode: 'multi', volume: 80, baseFreq: 1000, pttSignal: 'RTS', pttActiveHigh: true, txMode: 'extended', dest: '', callsign: '', beaconOn: false, beaconMin: 10, beaconM: 500, pttLeadMs: 100, pttTailMs: 150, voxTone: false, stationPos: '', contactFreq: '', medevacPeace: false };
     try {
       const saved = localStorage.getItem('sonochat-settings');
       if (!saved) return defaults;
@@ -1466,6 +1506,7 @@
       contactFreq: settingContactFreq.value.trim(),
       medevacPeace: loadSettings().medevacPeace,
       rxMode: settingRxMode.value === 'single' ? 'single' : 'multi',
+      showHam: settingShowHam.checked,
       v: 3,
     };
     localStorage.setItem('sonochat-settings', JSON.stringify(settings));

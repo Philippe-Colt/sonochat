@@ -333,6 +333,23 @@ arrêté). Pendant l'écoute :
   **nouvelle capture** après 4 s (au plus une toutes les 10 s, jamais pendant une émission).
   L'assistant reste prioritaire tant qu'il écoute lui-même : seule la reprise est possible.
 
+## FT8 radioamateur (messages standard WSJT-X, FT8CN)
+
+Même modulation, autre charge utile : avant, une trame ni texte libre ni télémétrie était jetée.
+`FT8Modem.decodeStandard(bits77)` donne le texte affiché par WSJT-X : i3 = 1/2 (« CQ F4ABC
+JN18 », « F4ABC K1XYZ -12 », R-08, RRR, RR73, 73, /R, /P, CQ DX/POTA/nnn, QRZ, DE), i3 = 4
+(indicatif non standard « CQ PJ4/K1ABC », hachage 12 bits), i3 = 0 n3 = 1 (DXpedition) ;
+Field Day et RTTY Roundup partiels (« [FD] », « [RU] » : section/État non décodés), autres
+types « [FT8 i3.n3] ». Hachages (`ft8Hash` = ihashcall de WSJT-X, 10/12/22 bits) des indicatifs
+entendus en clair (`rememberCall`) : `<PJ4/K1ABC>` résolu, sinon `<...>`. Dans `_attemptDecode` :
+`frame.ham` ; dans `app.js` : **jamais SonoLink** (ni accusé ni assemblage), bulle `.message.ham`
+au texte brut + « FT8 radioamateur · 1234 Hz », 200 gardées dans l'historique, option
+« Afficher le FT8 radioamateur » (cochée ; `body.hide-ham`). Mode multifréquence seulement.
+Le **texte libre** radioamateur reste à SonoLink (émetteur « ? ») : sans en-tête, il ne se
+distingue pas d'un fragment d'étendu ChatMTX (bloc 0 perdu) qu'une répétition doit remplacer.
+Test : `node tests/ft8-standard.js` (vecteurs officiels `ft8code` de WSJT-X : 24/26 identiques,
+2 formats de concours partiels ; hachages ; chaîne modulation → frame.ham).
+
 ## Barre des canaux (au-dessus de la saisie)
 
 Remplace l'ancien spectre autour d'une seule fréquence (`drawChannels` dans `app.js`). Une
@@ -505,6 +522,13 @@ WirePlumber `51-ic7300-exclusif.lua` — ne jamais la contourner) et ses garde-f
 - Journal toutes les 30 s : trames/s et niveau reçus du pupitre, niveau du micro ChatMTX,
   trames d'émission. `NO_TX=1` : réception seule, l'émission est captée et comptée, jamais émise.
 - `install.sh` (dépendances, compte, service `chatmtx-station.service` de la session graphique).
+- Session du pupitre gardée (`~/.config/chatmtx-station/session`, 7 jours) : se reconnecter à
+  chaque démarrage épuise la limite de 5 connexions / 15 min du pupitre (attente de 16 min
+  après un refus). Présence du poste suivie : « POSTE NON JOIGNABLE (CI-V) », PTT refusé.
+- **IC-7300 : « CI-V USB Baud Rate » = 19200** (pas Auto : en Auto le poste se cale sur le
+  dernier débit entendu, et un autre logiciel à 115 200 le rendait muet pour le pupitre).
+- Essai d'émission réel (4 oct. 2026) : étendu 2 blocs, alternat 24,9 s, 2 465 trames de 10 ms,
+  aucune coupure du chien de garde.
 
 ## Déploiement — https://chatmtx.f4mtx.com
 

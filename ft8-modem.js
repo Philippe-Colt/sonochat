@@ -498,6 +498,139 @@ class FT8Modem {
   }
 
   // ============================================================
+  // FT8 RADIOAMATEUR : messages standard (WSJT-X, packjt77), en texte
+  // ============================================================
+
+  /** Valeur des bits [from, from+n) (MSB d'abord), en nombre (n ≤ 52) ou BigInt (big). */
+  static _bits(bits, from, n, big) {
+    let v = 0n;
+    for (let i = 0; i < n; i++) v = (v << 1n) | BigInt(bits[from + i]);
+    return big ? v : Number(v);
+  }
+
+  /** Hachage d'un indicatif (WSJT-X ihashcall) sur m bits : 10, 12 ou 22. */
+  static ft8Hash(call, m) {
+    const A = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/';
+    const c = (call + '           ').slice(0, 11);
+    let n = 0n;
+    for (const ch of c) n = n * 38n + BigInt(Math.max(0, A.indexOf(ch)));
+    const prod = (47055833459n * n) & ((1n << 64n) - 1n);
+    return Number(prod >> BigInt(64 - m));
+  }
+
+  /** Mémorise un indicatif entendu en clair : ses hachages 10/12/22 bits le retrouveront. */
+  static rememberCall(call) {
+    if (!call || call.length < 3 || /^(CQ|DE|QRZ)\b/.test(call) || call.indexOf('<') >= 0) return;
+    const H = FT8Modem._hashes || (FT8Modem._hashes = { 10: new Map(), 12: new Map(), 22: new Map() });
+    for (const m of [10, 12, 22]) H[m].set(FT8Modem.ft8Hash(call, m), call);
+  }
+
+  static _hashCall(h, m) {
+    const H = FT8Modem._hashes;
+    const c = H && H[m].get(h);
+    return '<' + (c || '...') + '>';
+  }
+
+  /** Indicatif ou mot réservé sur 28 bits (pack28 de WSJT-X). */
+  static _unpack28(n) {
+    const NTOKENS = 2063592, MAX22 = 4194304;
+    if (n < NTOKENS) {
+      if (n === 0) return 'DE';
+      if (n === 1) return 'QRZ';
+      if (n === 2) return 'CQ';
+      if (n <= 1002) return 'CQ ' + String(n - 3).padStart(3, '0');
+      if (n <= 532443) {
+        const A = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        let m = n - 1003, out = '';
+        for (let i = 0; i < 4; i++) { out = A[m % 27] + out; m = Math.floor(m / 27); }
+        return 'CQ ' + out.trim();
+      }
+      return '<...>';
+    }
+    n -= NTOKENS;
+    if (n < MAX22) return FT8Modem._hashCall(n, 22);
+    n -= MAX22;
+    const a1 = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', a2 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+      a3 = '0123456789', a4 = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const d = [36 * 10 * 27 * 27 * 27, 10 * 27 * 27 * 27, 27 * 27 * 27, 27 * 27, 27, 1];
+    const al = [a1, a2, a3, a4, a4, a4];
+    let call = '';
+    for (let i = 0; i < 6; i++) { const k = Math.floor(n / d[i]); n -= k * d[i]; call += al[i][k] || ''; }
+    call = call.trim();
+    // Préfixes spéciaux (WSJT-X) : 3DA0 codé 3D0, 3X+lettre codé Q+lettre
+    if (/^3D0/.test(call)) call = '3DA0' + call.slice(3);
+    else if (/^Q[A-Z]/.test(call)) call = '3X' + call.slice(1);
+    FT8Modem.rememberCall(call);
+    return call;
+  }
+
+  /** Locator 4 car. ou report sur 15 bits (+ R) : '', 'JN18', 'R JN18', '-12', 'R-08', 'RRR'... */
+  static _grid15(g, r) {
+    const MAXGRID4 = 32400;
+    if (g <= MAXGRID4) {
+      const j1 = Math.floor(g / 1800), j2 = Math.floor((g % 1800) / 100), j3 = Math.floor((g % 100) / 10), j4 = g % 10;
+      const grid = String.fromCharCode(65 + j1, 65 + j2) + j3 + j4;
+      return (r ? 'R ' : '') + grid;
+    }
+    const irpt = g - MAXGRID4;
+    if (irpt === 1) return '';
+    if (irpt === 2) return 'RRR';
+    if (irpt === 3) return 'RR73';
+    if (irpt === 4) return '73';
+    const snr = irpt - 35;
+    return (r ? 'R' : '') + (snr >= 0 ? '+' : '-') + String(Math.abs(snr)).padStart(2, '0');
+  }
+
+  /**
+   * Message FT8 radioamateur → texte affiché comme par WSJT-X (« CQ F4ABC JN18 »,
+   * « F4ABC K1XYZ -12 », « RR73 »…). null pour le texte libre et la télémétrie (lus par
+   * decodeText / decodeTelemetry). Types rares (Field Day, RTTY, EU VHF) : en clair
+   * partiellement ou « [FT8 i3.n3] ».
+   */
+  static decodeStandard(bits) {
+    const i3 = FT8Modem._bits(bits, 74, 3);
+    const n3 = FT8Modem._bits(bits, 71, 3);
+    const b = (f, n) => FT8Modem._bits(bits, f, n);
+    if (i3 === 1 || i3 === 2) {
+      const suf = i3 === 1 ? '/R' : '/P';
+      let c1 = FT8Modem._unpack28(b(0, 28)), c2 = FT8Modem._unpack28(b(29, 28));
+      if (b(28, 1)) c1 += suf;
+      if (b(57, 1)) c2 += suf;
+      const tail = FT8Modem._grid15(b(59, 15), b(58, 1));
+      return (c1 + ' ' + c2 + (tail ? ' ' + tail : '')).trim();
+    }
+    if (i3 === 4) {
+      const A = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/';
+      const h12 = b(0, 12);
+      let n58 = FT8Modem._bits(bits, 12, 58, true), c58 = '';
+      for (let i = 0; i < 11; i++) { c58 = A[Number(n58 % 38n)] + c58; n58 /= 38n; }
+      c58 = c58.trim();
+      FT8Modem.rememberCall(c58);
+      const h1 = b(70, 1), r2 = b(71, 2), cq = b(73, 1);
+      if (cq) return 'CQ ' + c58;
+      const hc = FT8Modem._hashCall(h12, 12);
+      const [x, y] = h1 ? [c58, hc] : [hc, c58];
+      return x + ' ' + y + ['', ' RRR', ' RR73', ' 73'][r2];
+    }
+    if (i3 === 0 && n3 === 1) { // DXpedition : « K1ABC RR73; W9XYZ <KH1/KH7Z> -08 »
+      const c1 = FT8Modem._unpack28(b(0, 28)), c2 = FT8Modem._unpack28(b(28, 28));
+      const snr = b(66, 5) * 2 - 30;
+      return c1 + ' RR73; ' + c2 + ' ' + FT8Modem._hashCall(b(56, 10), 10) + ' ' + (snr >= 0 ? '+' : '-') + String(Math.abs(snr)).padStart(2, '0');
+    }
+    if (i3 === 0 && (n3 === 3 || n3 === 4)) { // Field Day : indicatifs, R, classe
+      const c1 = FT8Modem._unpack28(b(0, 28)), c2 = FT8Modem._unpack28(b(28, 28));
+      const ntx = b(57, 4) + 1 + (n3 === 4 ? 16 : 0), cls = String.fromCharCode(65 + b(61, 3));
+      return c1 + ' ' + c2 + (b(56, 1) ? ' R' : '') + ' ' + ntx + cls + ' [FD]';
+    }
+    if (i3 === 3) { // RTTY Roundup : TU, indicatifs, R, report 5x9
+      const c1 = FT8Modem._unpack28(b(1, 28)), c2 = FT8Modem._unpack28(b(29, 28));
+      return (b(0, 1) ? 'TU; ' : '') + c1 + ' ' + c2 + (b(57, 1) ? ' R' : '') + ' 5' + (b(58, 3) + 2) + '9 [RU]';
+    }
+    if (i3 === 0 && (n3 === 0 || n3 === FT8.N3_TELEMETRY)) return null;
+    return '[FT8 ' + i3 + '.' + n3 + ']';
+  }
+
+  // ============================================================
   // CRC-14
   // ============================================================
 
@@ -1622,11 +1755,13 @@ class FT8Modem {
 
         const text = FT8Modem.decodeText(payload);
         const telemetry = text === null ? FT8Modem.decodeTelemetry(payload) : null;
-        if (text === null && telemetry === null) continue; // other FT8 message types
+        // FT8 radioamateur (messages standard WSJT-X) : texte tel qu'on le reçoit (frame.ham)
+        const ham = text === null && telemetry === null ? FT8Modem.decodeStandard(payload) : null;
+        if (text === null && telemetry === null && ham === null) continue;
 
         let spanStart = cand.sampleOff;
         let spanEnd = cand.sampleOff + frameLen;
-        let frame = { text, telemetry, ext: false, blocks: null, score: cand.score };
+        let frame = { text, telemetry, ham, ext: false, blocks: null, score: cand.score };
 
         if (text !== null) {
           const ext = this._tryExtendedDecode(
@@ -1660,8 +1795,8 @@ class FT8Modem {
         this._decodedSpans.push({ start: frame.absPos, end: frame.absEnd, freq: usedFreq });
 
         const elapsed = performance.now() - t0;
-        console.log('[FT8 RX] ' + (frame.ext ? 'EXTENDED (' + frame.blocks.length + ' blocs)' : text !== null ? 'TEXT' : 'TELEMETRY')
-          + ': ' + (text !== null ? '"' + frame.text + '"' : telemetry.toString(16)) + ' à ' + usedFreq.toFixed(1) + ' Hz in ' + (elapsed | 0) + 'ms');
+        console.log('[FT8 RX] ' + (frame.ext ? 'EXTENDED (' + frame.blocks.length + ' blocs)' : text !== null ? 'TEXT' : ham !== null ? 'FT8' : 'TELEMETRY')
+          + ': ' + (text !== null ? '"' + frame.text + '"' : ham !== null ? '"' + ham + '"' : telemetry.toString(16)) + ' à ' + usedFreq.toFixed(1) + ' Hz in ' + (elapsed | 0) + 'ms');
         if (this.onFrame) this.onFrame(frame);
         decoded = true;
         break;

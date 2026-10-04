@@ -497,9 +497,11 @@ WirePlumber `51-ic7300-exclusif.lua` — ne jamais la contourner) et ses garde-f
 - Profil Chromium `~/.local/share/chatmtx-station` (indicatif, annuaire, historique de la
   station) ; `--disable-features=LocalNetworkAccessChecks` (page https → pont `ws://127.0.0.1`).
 - Écoute lancée seule ; nouvelle version (`CACHE_NAME` de `sw.js`, toutes les 5 min) → page
-  rechargée au repos. PTT relâché sur fermeture/plantage/arrêt et après 130 s ; le pupitre
-  coupe de son côté à 60 s (`PUPITRE_MAX_TX`) : étendus de plus de ~4 blocs coupés tant qu'une
-  limite propre au compte station n'est pas ajoutée au pupitre.
+  rechargée au repos. PTT relâché sur fermeture/plantage/arrêt et après 130 s. Le pupitre accorde
+  au **seul compte station** une durée maximale d'émission de 130 s (`station_max_tx` dans son
+  `app.py`, `set_ptt(on, max_tx)` dans `icom/controller.py`, `.env` : `PUPITRE_STATION_EMAIL`,
+  `PUPITRE_STATION_MAX_TX`, borné à 180 s) ; les autres comptes gardent `PUPITRE_MAX_TX` (60 s)
+  et ses trois autres barrières s'appliquent aussi à la station.
 - Journal toutes les 30 s : trames/s et niveau reçus du pupitre, niveau du micro ChatMTX,
   trames d'émission. `NO_TX=1` : réception seule, l'émission est captée et comptée, jamais émise.
 - `install.sh` (dépendances, compte, service `chatmtx-station.service` de la session graphique).

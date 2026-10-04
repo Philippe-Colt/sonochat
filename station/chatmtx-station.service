@@ -1,0 +1,14 @@
+[Unit]
+Description=ChatMTX station HF (fenêtre ChatMTX reliée à l'IC-7300 par le pupitre telec-icom)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+WorkingDirectory=%h/projects/sono-chat/station
+# Attend le pupitre (http://127.0.0.1:8000) tant qu'il n'est pas démarré
+ExecStart=/usr/bin/node %h/projects/sono-chat/station/chatmtx-station.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

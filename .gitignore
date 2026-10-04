@@ -5,3 +5,4 @@ mobile/www/
 mobile/android/keystore.properties
 mobile/android/app/src/main/assets/public/
 *.jks
+station/node_modules/

@@ -1,0 +1,9 @@
+{
+  "name": "chatmtx-station",
+  "private": true,
+  "description": "Station de test HF : le vrai ChatMTX dans une fenêtre reliée à l'IC-7300 (son USB, PTT CI-V via rigctld)",
+  "dependencies": {
+    "playwright-core": "1.63.0",
+    "ws": "8.22.0"
+  }
+}

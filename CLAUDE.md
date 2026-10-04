@@ -473,6 +473,31 @@ node tests/stations.js        # ONLY=12,24 : seulement ces scénarios
 ```
 
 
+## Station de test HF (`station/`) : ChatMTX sur l'IC-7300 du PC
+
+Le **vrai ChatMTX** (https://chatmtx.f4mtx.com, même code que l'APK) dans une fenêtre Chromium
+du bureau, relié à l'IC-7300 **par le pupitre telec-icom** (`~/projects/telec-icom`, démarré par
+son `run.sh`, port 8000), qui garde l'exclusivité du poste (CI-V, codec réservé par sa règle
+WirePlumber `51-ic7300-exclusif.lua` — ne jamais la contourner) et ses garde-fous d'émission.
+- `chatmtx-station.js` (Node + `playwright-core` 1.63.0 + `ws`) : se connecte au pupitre avec le
+  compte station (`compte.py` : compte machine vérifié, approuvé, droit d'émettre, sans second
+  facteur ; identifiants dans `~/.config/chatmtx-station/compte.json`, 0600).
+  Réception : `/ws/rx` (PCM 16 bits 12 kHz, trames de 240) → pont local WebSocket → **faux micro**
+  de la page (`getUserMedia` remplacé, souffle infime quand rien n'arrive). Émission : PTT de
+  l'appli = faux port série (`modem.serialPort.setSignals`) → ordre `{action:'ptt'}` sur
+  `/ws/state` ; pendant `transmitSymbols`, `ctx.destination` est remplacé par un
+  `MediaStreamDestination` capté à 12 kHz → `/ws/tx` (rien vers les haut-parleurs du PC).
+  Fréquence du poste lue dans l'état du pupitre (titre) ; **aucun ordre de fréquence ni de mode**.
+- Profil Chromium `~/.local/share/chatmtx-station` (indicatif, annuaire, historique de la
+  station) ; `--disable-features=LocalNetworkAccessChecks` (page https → pont `ws://127.0.0.1`).
+- Écoute lancée seule ; nouvelle version (`CACHE_NAME` de `sw.js`, toutes les 5 min) → page
+  rechargée au repos. PTT relâché sur fermeture/plantage/arrêt et après 130 s ; le pupitre
+  coupe de son côté à 60 s (`PUPITRE_MAX_TX`) : étendus de plus de ~4 blocs coupés tant qu'une
+  limite propre au compte station n'est pas ajoutée au pupitre.
+- Journal toutes les 30 s : trames/s et niveau reçus du pupitre, niveau du micro ChatMTX,
+  trames d'émission. `NO_TX=1` : réception seule, l'émission est captée et comptée, jamais émise.
+- `install.sh` (dépendances, compte, service `chatmtx-station.service` de la session graphique).
+
 ## Déploiement — https://chatmtx.f4mtx.com
 
 ```bash

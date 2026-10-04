@@ -26,6 +26,18 @@ const fs = require('fs');
 const URL_APP = process.env.STATION_URL || 'https://chatmtx.f4mtx.com/';
 const PUPITRE = process.env.PUPITRE || 'http://127.0.0.1:8000';
 const NO_TX = process.env.NO_TX === '1';
+// Essai (réception seule) : la page émet une trame de test, l'audio qui serait parti au pupitre
+// est enregistré dans ce WAV (12 kHz) pour être décodé hors ligne
+const TX_WAV = NO_TX && process.env.SELFTEST === '1' ? (process.env.TX_WAV || '/tmp/chatmtx-station-tx.wav') : null;
+const txRecord = [];
+
+function writeWav(file, frames, rate) {
+  const pcm = Buffer.concat(frames), b = Buffer.alloc(44);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + pcm.length, 4); b.write('WAVE', 8); b.write('fmt ', 12);
+  b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(rate, 24);
+  b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(pcm.length, 40);
+  fs.writeFileSync(file, Buffer.concat([b, pcm]));
+}
 const PTT_MAX_MS = 130000;
 const VERSION_CHECK_MS = 5 * 60000;
 const PROFILE = path.join(os.homedir(), '.local', 'share', 'chatmtx-station');
@@ -97,7 +109,13 @@ function sendState(obj) {
 }
 
 function ptt(on, why) {
-  if (NO_TX) { if (on) log('PTT demandé (NO_TX : pas d\'émission)'); return; }
+  if (NO_TX) {
+    if (on) log('PTT demandé (NO_TX : pas d\'émission)');
+    else if (TX_WAV && txRecord.length) {
+      setTimeout(() => { writeWav(TX_WAV, txRecord, 12000); log('essai : ' + txRecord.length + ' trames captées → ' + TX_WAV); txRecord.length = 0; }, 800);
+    }
+    return;
+  }
   clearTimeout(rig.pttTimer);
   if (on && !rig.ptt) {
     if (!rig.up) { log('PTT refusé : pupitre non connecté'); return; }
@@ -109,6 +127,7 @@ function ptt(on, why) {
     rig.pttTimer = setTimeout(() => { log('PTT : 130 s, relâché d\'office'); ptt(false, 'minuteur'); }, PTT_MAX_MS);
     log('PTT ON' + (why ? ' (' + why + ')' : ''));
   } else if (!on && rig.ptt) {
+    releasePending = false;
     sendState({ action: 'ptt', on: false });
     rig.ptt = false;
     const tx = rig.txWs;
@@ -116,6 +135,35 @@ function ptt(on, why) {
     if (tx) setTimeout(() => tx.close(), 200); // fermer le canal fait aussi retomber l'alternat
     log('PTT OFF' + (why ? ' (' + why + ')' : '') + ' après ' + ((Date.now() - rig.pttSince) / 1000).toFixed(1) + ' s');
   }
+}
+
+// ---------------- Émission cadencée ----------------
+// La page livre les trames par à-coups (fil principal) : on les rejoue vers le pupitre au
+// rythme exact d'une trame toutes les 10 ms, après 0,3 s d'avance, et le PTT n'est relâché
+// qu'une fois la file vidée (sinon la fin de la trame FT8 serait coupée).
+const txQueue = [];
+let txPrimed = false, txNext = 0, releasePending = false;
+function txPump() {
+  if (!rig.ptt) { txQueue.length = 0; txPrimed = false; return; }
+  const now = Date.now();
+  if (!txPrimed) {
+    if (txQueue.length < 30 && !releasePending) return;
+    txPrimed = true;
+    txNext = now;
+  }
+  while (txNext <= now && txQueue.length) {
+    const f = txQueue.shift();
+    if (rig.txWs && rig.txWs.readyState === 1) { rig.txWs.send(f); stats.txFrames++; }
+    txNext += 10;
+  }
+  if (txNext < now - 50) txNext = now; // retard de livraison : on reprend la cadence
+  if (releasePending && !txQueue.length) { releasePending = false; txPrimed = false; ptt(false, 'ChatMTX'); }
+}
+setInterval(txPump, 5);
+
+function releaseAfterDrain() {
+  if (!rig.ptt) return;
+  releasePending = true;
 }
 
 // ---------------- Pont local page ↔ lanceur ----------------
@@ -126,14 +174,18 @@ function startBridge() {
     srv.on('connection', (sock) => {
       pageSock = sock;
       sock.on('message', (d, isBinary) => {
-        if (isBinary) { // trame d'émission (PCM 16 bits 12 kHz)
-          if (NO_TX) { stats.txFrames++; return; } // essai : captée et comptée, jamais émise
-          if (rig.ptt && rig.txWs && rig.txWs.readyState === 1) { rig.txWs.send(d); stats.txFrames++; }
+        if (isBinary) { // trame d'émission (PCM 16 bits 12 kHz, 10 ms)
+          if (NO_TX) { stats.txFrames++; if (TX_WAV) txRecord.push(Buffer.from(d)); return; } // essai : captée, jamais émise
+          if (rig.ptt) txQueue.push(d);
           return;
         }
         try {
           const m = JSON.parse(d.toString());
-          if ('ptt' in m) ptt(!!m.ptt, 'ChatMTX');
+          if ('ptt' in m) {
+            if (m.ptt) ptt(true, 'ChatMTX');
+            else if (NO_TX) ptt(false, 'ChatMTX');
+            else releaseAfterDrain();
+          }
           if (m.stat) stats.page = m.stat;
         } catch (e) { /* ignoré */ }
       });
@@ -148,52 +200,100 @@ function startBridge() {
 function initScript(port) {
   if (window.__stationInit) return;
   window.__stationInit = true;
-  const RATE = 12000, FRAME = 240;
-  let sock = null;
-  const rxQueue = [];
-  let rxLen = 0;
+  const RATE = 12000;
+  // Traitement audio sur le fil audio (AudioWorklet) : un ScriptProcessor sur le fil principal
+  // perdait la moitié des échantillons pendant les passes de décodage (trame trouée sur l'air)
+  const WORKLET = `
+    class RxSrc extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.q = []; this.cur = null; this.pos = 0; this.len = 0; this.started = false; this.sq = 0; this.n = 0;
+        this.port.onmessage = (e) => {
+          const s = e.data; this.q.push(s); this.len += s.length;
+          while (this.len > 2 * ${RATE}) this.len -= this.q.shift().length; // au plus 2 s de retard
+        };
+      }
+      process(_, outputs) {
+        const out = outputs[0][0];
+        // Démarre avec 0,5 s d'avance : absorbe les à-coups de livraison du fil principal
+        if (!this.started && this.len >= ${RATE} / 2) this.started = true;
+        for (let i = 0; i < out.length; i++) {
+          if (this.started && (!this.cur || this.pos >= this.cur.length)) {
+            this.cur = this.q.shift() || null; this.pos = 0;
+            if (this.cur) this.len -= this.cur.length; else this.started = false;
+          }
+          out[i] = this.started && this.cur ? this.cur[this.pos++] / 32768 : (Math.random() - 0.5) * 1e-5;
+          this.sq += out[i] * out[i]; this.n++;
+        }
+        if (this.n >= ${RATE} * 10) { this.port.postMessage({ level: 10 * Math.log10(this.sq / this.n + 1e-12), queued: this.len }); this.sq = 0; this.n = 0; }
+        return true;
+      }
+    }
+    class TxCap extends AudioWorkletProcessor {
+      constructor() { super(); this.acc = new Int16Array(120); this.n = 0; } // 120 échantillons = 10 ms = trame du pupitre (240 octets)
+      process(inputs) {
+        const x = inputs[0] && inputs[0][0];
+        if (!x) return true;
+        for (let i = 0; i < x.length; i++) {
+          this.acc[this.n++] = Math.max(-32767, Math.min(32767, Math.round(x[i] * 32767)));
+          if (this.n === 120) { this.port.postMessage(this.acc.buffer, [this.acc.buffer]); this.acc = new Int16Array(120); this.n = 0; }
+        }
+        return true;
+      }
+    }
+    registerProcessor('rx-src', RxSrc);
+    registerProcessor('tx-cap', TxCap);`;
+  const workletUrl = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+
+  let sock = null, rxNode = null;
   const connect = () => {
     sock = new WebSocket('ws://127.0.0.1:' + port);
     sock.binaryType = 'arraybuffer';
     sock.onmessage = (e) => {
-      if (typeof e.data === 'string') return;
+      if (typeof e.data === 'string' || !rxNode) return;
       const s = new Int16Array(e.data);
-      rxQueue.push(s);
-      rxLen += s.length;
-      while (rxLen > RATE) rxLen -= rxQueue.shift().length; // pas plus d'1 s de retard
+      rxNode.port.postMessage(s, [s.buffer]);
     };
     sock.onclose = () => setTimeout(connect, 2000);
   };
   connect();
-  window.__stationSend = (x) => { if (sock && sock.readyState === 1) sock.send(x); };
+  const send = (x) => { if (sock && sock.readyState === 1) sock.send(x); };
 
-  // Faux micro : la réception du poste (12 kHz), un souffle infime quand rien n'arrive
-  // (pendant l'émission le pupitre n'envoie rien : pas de « micro coupé » à tort)
-  let micStream = null, micSq = 0, micN = 0;
-  setInterval(() => {
-    window.__stationSend(JSON.stringify({ stat: { mic: micN ? 10 * Math.log10(micSq / micN + 1e-12) : null, queued: rxLen } }));
-    micSq = 0; micN = 0;
-  }, 10000);
+  // Faux micro : la réception du poste (12 kHz) ; souffle infime quand rien n'arrive (pendant
+  // l'émission le pupitre n'envoie rien : pas de « micro coupé » à tort)
+  let micReady = null;
   const fakeMic = () => {
-    if (micStream) return micStream;
-    const ctx = new AudioContext({ sampleRate: RATE });
-    const sp = ctx.createScriptProcessor(1024, 1, 1);
-    let cur = null, pos = 0;
-    sp.onaudioprocess = (ev) => {
-      const out = ev.outputBuffer.getChannelData(0);
-      for (let i = 0; i < out.length; i++) {
-        if (!cur || pos >= cur.length) { cur = rxQueue.shift() || null; pos = 0; if (cur) rxLen -= cur.length; }
-        out[i] = cur ? cur[pos++] / 32768 : (Math.random() - 0.5) * 1e-5;
-        micSq += out[i] * out[i]; micN++;
-      }
-    };
-    const dest = ctx.createMediaStreamDestination();
-    sp.connect(dest);
-    micStream = dest.stream;
-    return micStream;
+    if (micReady) return micReady;
+    micReady = (async () => {
+      const ctx = new AudioContext({ sampleRate: RATE });
+      await ctx.audioWorklet.addModule(workletUrl);
+      rxNode = new AudioWorkletNode(ctx, 'rx-src');
+      rxNode.port.onmessage = (e) => send(JSON.stringify({ stat: { mic: e.data.level, queued: e.data.queued } }));
+      const dest = ctx.createMediaStreamDestination();
+      rxNode.connect(dest);
+      ctx.resume();
+      return dest.stream;
+    })();
+    return micReady;
   };
   const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-  navigator.mediaDevices.getUserMedia = (c) => (c && c.audio ? Promise.resolve(fakeMic().clone()) : gum(c));
+  navigator.mediaDevices.getUserMedia = (c) => (c && c.audio ? fakeMic().then((s) => s.clone()) : gum(c));
+
+  // Captation de l'émission : contexte et module préparés une fois
+  let capReady = null;
+  const capture = () => {
+    if (capReady) return capReady;
+    capReady = (async () => {
+      const cap = new AudioContext({ sampleRate: RATE });
+      await cap.audioWorklet.addModule(workletUrl);
+      const node = new AudioWorkletNode(cap, 'tx-cap');
+      node.port.onmessage = (e) => send(e.data);
+      node.connect(cap.destination); // muet : la sortie du processeur est vide
+      cap.resume();
+      return { cap, node };
+    })();
+    return capReady;
+  };
 
   // Émission : PTT par le pupitre, audio du modem capté au lieu des haut-parleurs du PC
   const patch = (C) => {
@@ -203,31 +303,21 @@ function initScript(port) {
     C.prototype.transmitSymbols = async function () {
       const m = this;
       if (!m.serialPort || m.serialPort.__station) {
-        m.serialPort = { __station: true, setSignals: async (o) => { window.__stationSend(JSON.stringify({ ptt: Object.values(o)[0] === m.pttActiveHigh })); } };
+        m.serialPort = { __station: true, setSignals: async (o) => { send(JSON.stringify({ ptt: Object.values(o)[0] === m.pttActiveHigh })); } };
       }
+      const { cap, node } = await capture();
       const ctx = m._ensureAudioContext();
       const tap = ctx.createMediaStreamDestination();
       Object.defineProperty(ctx, 'destination', { value: tap, configurable: true });
-      const cap = new AudioContext({ sampleRate: RATE });
       const src = cap.createMediaStreamSource(tap.stream);
-      const sp = cap.createScriptProcessor(1024, 1, 1);
-      let acc = new Int16Array(FRAME), n = 0;
-      sp.onaudioprocess = (ev) => {
-        const x = ev.inputBuffer.getChannelData(0);
-        for (let i = 0; i < x.length; i++) {
-          acc[n++] = Math.max(-32767, Math.min(32767, Math.round(x[i] * 32767)));
-          if (n === FRAME) { window.__stationSend(acc.buffer.slice(0)); n = 0; }
-        }
-      };
-      src.connect(sp);
-      sp.connect(cap.destination); // muet : il n'y a aucun signal à cet endroit du graphe
+      src.connect(node);
       window.__stationTx = true;
       try {
         return await tx.apply(this, arguments);
       } finally {
         window.__stationTx = false;
         delete ctx.destination;
-        setTimeout(() => cap.close(), 500);
+        setTimeout(() => src.disconnect(), 300);
       }
     };
   };
@@ -281,6 +371,13 @@ async function cacheName() {
   page.on('load', () => autoListen(page));
   ctx.on('close', () => { ptt(false, 'fenêtre fermée'); setTimeout(() => process.exit(0), 300); });
   await page.goto(URL_APP);
+  if (TX_WAV) {
+    // Auto-essai : une trame standard émise par un modem de la page (prototype patché)
+    setTimeout(() => page.evaluate(() => {
+      const m = new FT8Modem({ baseFreq: 1000 });
+      return m.transmitSymbols([FT8Modem.textToSymbols('ESSAI STATION')]);
+    }).then(() => log('essai : émission terminée côté page')).catch((e) => log('essai : ' + e.message)), 8000);
+  }
   let version = await cacheName();
   log('version en ligne : ' + version);
 

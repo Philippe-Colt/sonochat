@@ -482,11 +482,17 @@ WirePlumber `51-ic7300-exclusif.lua` — ne jamais la contourner) et ses garde-f
 - `chatmtx-station.js` (Node + `playwright-core` 1.63.0 + `ws`) : se connecte au pupitre avec le
   compte station (`compte.py` : compte machine vérifié, approuvé, droit d'émettre, sans second
   facteur ; identifiants dans `~/.config/chatmtx-station/compte.json`, 0600).
-  Réception : `/ws/rx` (PCM 16 bits 12 kHz, trames de 240) → pont local WebSocket → **faux micro**
-  de la page (`getUserMedia` remplacé, souffle infime quand rien n'arrive). Émission : PTT de
-  l'appli = faux port série (`modem.serialPort.setSignals`) → ordre `{action:'ptt'}` sur
-  `/ws/state` ; pendant `transmitSymbols`, `ctx.destination` est remplacé par un
-  `MediaStreamDestination` capté à 12 kHz → `/ws/tx` (rien vers les haut-parleurs du PC).
+  Trames du pupitre : **240 octets = 120 échantillons = 10 ms** à 12 kHz.
+  Réception : `/ws/rx` → pont local WebSocket → **faux micro** de la page (`getUserMedia`
+  remplacé ; `AudioWorklet` `rx-src` avec 0,5 s d'avance, souffle infime quand rien n'arrive).
+  Émission : PTT de l'appli = faux port série (`modem.serialPort.setSignals`) → ordre
+  `{action:'ptt'}` sur `/ws/state` ; pendant `transmitSymbols`, `ctx.destination` est remplacé
+  par un `MediaStreamDestination` capté à 12 kHz (`AudioWorklet` `tx-cap`, sur le fil audio :
+  insensible aux passes de décodage) → le lanceur **recadence** à 1 trame / 10 ms après 0,3 s
+  d'avance → `/ws/tx` ; PTT relâché seulement **file vidée** (sinon fin de trame coupée). Rien
+  vers les haut-parleurs du PC. `SELFTEST=1` (avec `NO_TX=1`) : la page émet « ESSAI STATION »,
+  l'audio qui serait parti est enregistré (`/tmp/chatmtx-station-tx.wav`) et se décode hors
+  ligne (vérifié : 13,19 s, décodé à 1 000,2 Hz).
   Fréquence du poste lue dans l'état du pupitre (titre) ; **aucun ordre de fréquence ni de mode**.
 - Profil Chromium `~/.local/share/chatmtx-station` (indicatif, annuaire, historique de la
   station) ; `--disable-features=LocalNetworkAccessChecks` (page https → pont `ws://127.0.0.1`).

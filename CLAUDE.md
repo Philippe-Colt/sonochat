@@ -530,6 +530,26 @@ WirePlumber `51-ic7300-exclusif.lua` — ne jamais la contourner) et ses garde-f
 - Essai d'émission réel (4 oct. 2026) : étendu 2 blocs, alternat 24,9 s, 2 465 trames de 10 ms,
   aucune coupure du chien de garde.
 
+### ChatMTX distant (écran de la station par la télécommande)
+
+- Bouton **« Station HF »** (antenne, en-tête de ChatMTX ; masqué dans la fenêtre de la station,
+  `window.__stationInit`) → https://telec.f4mtx.com/chatmtx (`REMOTE_STATION_URL`). APK :
+  `server.allowNavigation: ['telec.f4mtx.com']` (on reste dans l'appli ; « Chat local » =
+  page précédente, sinon https://chatmtx.f4mtx.com/).
+- Pupitre telec-icom : `/chatmtx` (protégé ; sans session → `/login?next=/chatmtx`, et
+  `login.js` y ramène — chemin local seulement), `web/chatmtx.{html,js,css}`, puce « ChatMTX »
+  dans sa barre, **`/ws/chatmtx`** : relais vers le serveur local de la station
+  (`127.0.0.1:8791`, `CHATMTX_SCREEN_PORT`) ; **voir = compte approuvé, agir = droit
+  d'émettre** (filtré par le pupitre, doublé par la station : `control=1`).
+- Station : capture CDP de la page (`Page.startScreencast`, JPEG 60, ≤ 5 images/s, partagée,
+  arrêtée sans spectateur, instantané à la connexion) ; page fixée à **480 × 900** (le profil
+  Chromium mémorisait une autre taille) ; entrées en coordonnées 0-1 → `page.mouse`
+  (toucher, glisser, molette), `keyboard.insertText` / touches (Entrée, Retour, Échap…) ;
+  journal « ChatMTX distant : <compte> agit ». Spectateur : image ajustée (`object-fit:
+  contain`, bandes noires retirées du calcul), champ « Écrire » pour le clavier du téléphone.
+- Chaque émission de la station est **enregistrée** (`~/.local/share/chatmtx-station/emissions/`,
+  5 dernières), mesurée et **décodée** dans le journal, avec mode, Po, ALC, ROS max du poste.
+
 ## Déploiement — https://chatmtx.f4mtx.com
 
 ```bash

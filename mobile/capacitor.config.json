@@ -4,5 +4,10 @@
   "webDir": "www",
   "android": {
     "backgroundColor": "#1a1a2e"
+  },
+  "server": {
+    "allowNavigation": [
+      "telec.f4mtx.com"
+    ]
   }
 }

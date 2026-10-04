@@ -577,6 +577,15 @@
       openViewer: (body, info) => MedevacUI.openViewer(body, info),
     });
     document.getElementById('btn-map').addEventListener('click', () => TacMap.open());
+    // Bascule vers le ChatMTX de la station HF (IC-7300), par la télécommande : connexion de la
+    // télécommande obligatoire, puis écran de la station ; « Chat local » y ramène. Masqué dans la
+    // fenêtre de la station elle-même (elle ne doit pas s'envoyer ailleurs).
+    const btnRemote = document.getElementById('btn-remote');
+    if (window.__stationInit) btnRemote.hidden = true;
+    btnRemote.addEventListener('click', () => {
+      if (modem.transmitting || link.busy) { alert('Emission en cours : attendre la fin de l\'envoi.'); return; }
+      location.assign(REMOTE_STATION_URL);
+    });
     document.getElementById('btn-msg').addEventListener('click', () => {
       if (link.busy) return;
       MedevacUI.openChooser(); // tous les messages formates, par type
@@ -1845,6 +1854,7 @@
   // Envoi si le temps OU la distance depuis la derniere balise est atteint, jamais
   // plus d'une fois par minute, jamais pendant un envoi ou une reception.
   const BEACON_MIN_GAP_MS = 60000;
+  const REMOTE_STATION_URL = 'https://telec.f4mtx.com/chatmtx';
 
   /** 90 → « 1 min 30 s », 180 → « 3 min », 20 → « 20 s ». */
   function fmtDuration(sec) {

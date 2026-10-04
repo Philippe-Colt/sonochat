@@ -1560,3 +1560,4 @@ body.alert-9line .medevac-btn { color: #3a0810; }
 .message.ham { opacity: 0.85; border-left: 3px solid #5d8aa8; font-family: monospace; }
 .message.ham .msg-text { letter-spacing: 0.02em; }
 body.hide-ham .message.ham { display: none; }
+.icon-btn[hidden] { display: none; }

@@ -517,7 +517,7 @@ async function cacheName() {
   const ctx = await chromium.launchPersistentContext(PROFILE, {
     headless: false,
     executablePath: process.env.CHROMIUM || path.join(os.homedir(), '.cache/ms-playwright/chromium-1243/chrome-linux64/chrome'),
-    viewport: null,
+    viewport: { width: 480, height: 900 }, // format téléphone fixe : le profil mémorisait une autre taille
     // LocalNetworkAccessChecks : la page (https) doit joindre le pont local ws://127.0.0.1 ; ce
     // Chromium est réservé à la station et ne sert qu'à ChatMTX
     args: ['--window-size=480,900', '--autoplay-policy=no-user-gesture-required', '--disable-features=LocalNetworkAccessChecks',

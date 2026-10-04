@@ -42,6 +42,9 @@ const PTT_MAX_MS = 130000;
 const VERSION_CHECK_MS = 5 * 60000;
 const PROFILE = path.join(os.homedir(), '.local', 'share', 'chatmtx-station');
 const ACCOUNT = path.join(os.homedir(), '.config', 'chatmtx-station', 'compte.json');
+// Session du pupitre gardée (7 jours) : se reconnecter à chaque démarrage épuisait la limite de
+// 5 connexions par quart d'heure, et chaque nouvel essai prolongeait le blocage
+const SESSION = path.join(os.homedir(), '.config', 'chatmtx-station', 'session');
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -53,6 +56,11 @@ const stats = { rxFrames: 0, rxSq: 0, rxN: 0, txFrames: 0, page: null };
 const dbfs = (sq, n) => (n ? (10 * Math.log10(sq / n + 1e-12)).toFixed(0) + ' dBFS' : '—');
 
 async function login() {
+  // Session gardée encore valable ?
+  try {
+    const saved = fs.readFileSync(SESSION, 'utf8').trim();
+    if (saved && await sessionValid(saved)) { rig.cookie = saved; return; }
+  } catch (e) { /* pas de session gardée */ }
   const acc = JSON.parse(fs.readFileSync(ACCOUNT, 'utf8'));
   const r = await fetch(PUPITRE + '/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(acc),
@@ -63,6 +71,18 @@ async function login() {
   const m = /pupitre_session=([^;]+)/.exec(c);
   if (!m) throw new Error('pas de cookie de session');
   rig.cookie = 'pupitre_session=' + m[1];
+  fs.writeFileSync(SESSION, rig.cookie, { mode: 0o600 });
+}
+
+/** La session répond-elle (WebSocket d'état accepté, pas fermé en 4401) ? */
+function sessionValid(cookie) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(wsUrl('/ws/state'), { headers: { Cookie: cookie } });
+    const t = setTimeout(() => { ws.terminate(); resolve(false); }, 4000);
+    ws.on('message', () => { clearTimeout(t); ws.close(); resolve(true); });
+    ws.on('close', () => { clearTimeout(t); resolve(false); });
+    ws.on('error', () => { clearTimeout(t); resolve(false); });
+  });
 }
 
 function wsUrl(p) { return PUPITRE.replace(/^http/, 'ws') + p; }
@@ -76,8 +96,10 @@ async function connectPupitre() {
     await login();
   } catch (e) {
     rig.up = false;
-    log('pupitre : ' + e.message + ' — nouvel essai dans 10 s');
-    setTimeout(connectPupitre, 10000);
+    // Refus pour trop de tentatives : attendre la fin du blocage (15 min) sans le prolonger
+    const wait = /trop de tentatives|429/.test(e.message) ? 16 * 60000 : 30000;
+    log('pupitre : ' + e.message + ' — nouvel essai dans ' + Math.round(wait / 1000) + ' s');
+    setTimeout(connectPupitre, wait);
     return;
   }
   const st = openWs('/ws/state');
@@ -85,12 +107,17 @@ async function connectPupitre() {
   st.on('message', (d) => {
     try {
       const m = JSON.parse(d.toString());
-      if (m.type === 'state') rig.state = { ...(rig.state || {}), ...m };
+      if (m.type === 'state') {
+        const was = rig.state && rig.state.present;
+        rig.state = { ...(rig.state || {}), ...m };
+        if ('present' in m && m.present !== was) log(m.present ? 'poste joint par le pupitre' : 'poste NON joint par le pupitre (CI-V)');
+      }
     } catch (e) { /* ignoré */ }
   });
   st.on('open', () => { rig.up = true; log('pupitre connecté'); });
-  st.on('close', () => {
+  st.on('close', (code) => {
     rig.up = false;
+    if (code === 4401) { try { fs.unlinkSync(SESSION); } catch (e) { /* déjà absente */ } }
     if (rig.stateWs === st) { log('pupitre : liaison perdue — reconnexion dans 5 s'); setTimeout(connectPupitre, 5000); }
   });
   st.on('error', () => {});
@@ -119,6 +146,10 @@ function ptt(on, why) {
   clearTimeout(rig.pttTimer);
   if (on && !rig.ptt) {
     if (!rig.up) { log('PTT refusé : pupitre non connecté'); return; }
+    if (rig.state && rig.state.present === false) {
+      log('PTT refusé : le pupitre ne joint pas le poste (CI-V : débit 19200 ou Auto, adresse 94h)');
+      return;
+    }
     rig.txWs = openWs('/ws/tx');
     rig.txWs.on('error', () => {});
     sendState({ action: 'ptt', on: true });
@@ -391,7 +422,9 @@ async function cacheName() {
 
   setInterval(() => {
     const f = rig.state && rig.state.frequency;
-    const t = 'ChatMTX — station HF IC-7300' + (rig.up ? (f ? ' · ' + (f / 1e6).toFixed(3).replace('.', ',') + ' MHz' : '') : ' · PUPITRE NON CONNECTÉ')
+    const absent = rig.up && rig.state && rig.state.present === false;
+    const t = 'ChatMTX — station HF IC-7300' + (!rig.up ? ' · PUPITRE NON CONNECTÉ' : absent ? ' · POSTE NON JOIGNABLE (CI-V)'
+      : f ? ' · ' + (f / 1e6).toFixed(3).replace('.', ',') + ' MHz' : '')
       + (NO_TX ? ' · RÉCEPTION SEULE' : '');
     page.evaluate((x) => { document.title = x; }, t).catch(() => {});
   }, 2000);
